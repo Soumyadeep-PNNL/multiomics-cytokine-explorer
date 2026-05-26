@@ -1,0 +1,7 @@
+data_cache.rds
+*.rds
+*.xlsx
+.Rhistory
+.RData
+.Rproj.user/
+.DS_Store
