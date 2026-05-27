@@ -349,23 +349,49 @@ load_pck005 <- function(path, meta) {
   sheets <- intersect(c("Global_Protein","Redox_Cysteine","Phospho_STY","Acetyl_Lysine"),
                       excel_sheets(path))
   tps    <- c("4h","8h","24h")
+
+  # Map each sheet to a human-readable omics_type
+  omics_map <- c(
+    Global_Protein  = "Proteomics",
+    Redox_Cysteine  = "Redox Proteomics",
+    Phospho_STY     = "Phosphoproteomics",
+    Acetyl_Lysine   = "Acetylomics"
+  )
+
   layers <- list()
   for (sh in sheets) {
     tryCatch({
       df <- suppressMessages(read_excel(path, sheet=sh, .name_repair="minimal"))
       nm <- normalize_colnames(names(df))
       g_i <- if (!is.na(nm$gene)) nm$gene else 1L
+
+      # gene_name = "PROTEIN_SITEID" for PTM sheets (e.g. "STAT1_T701"),
+      # plain protein name for Global_Protein. This lets Gene Search do prefix
+      # matching (STAT1 → finds STAT1, STAT1_T701, STAT1_S727 etc.)
       gene_v <- as.character(df[[g_i]])
+
+      # For PTM sheets, fuse site ID into gene_name as "PROTEIN_SITE"
       site_col <- grep("site_id", tolower(names(df)), value=FALSE)
-      if (length(site_col)) gene_v <- paste0(gene_v, "_", as.character(df[[site_col[1]]]))
+      if (length(site_col)) {
+        site_v <- as.character(df[[site_col[1]]])
+        gene_v <- paste0(gene_v, "_", site_v)
+      }
+
       long <- pivot_timepoints(df, g_i, "logFC_", "adj.P.Val_", tps)
-      if (is.null(long) || nrow(long)==0) return(NULL)
-      # Re-attach correct gene names (pivot repeats them)
-      n_rows <- nrow(df)
-      long$gene_name <- unlist(lapply(tps, function(tp) gene_v))[seq_len(nrow(long))]
-      long <- long[!is.na(long$gene_name) & !is.na(long$log2FC), ]
+      if (is.null(long) || nrow(long) == 0) next   # skip this sheet, not the whole function
+
+      # Re-attach gene names (pivot_timepoints already fills gene_name from df,
+      # but we want our fused "PROTEIN_SITE" version here)
+      long$gene_name <- rep(gene_v, times = length(tps))[seq_len(nrow(long))]
+
+      long <- long[!is.na(long$gene_name) & nzchar(long$gene_name) & !is.na(long$log2FC), ]
+      if (nrow(long) == 0) next
+
+      otype <- omics_map[sh]
+      if (is.na(otype)) otype <- "Proteomics"
+
       layers[[sh]] <- make_layer(long$gene_name, long$log2FC, long$pvalue, long$padj,
-        comparison=long$comparison, pkg_id="Pck005", layer_name=sh, omics_type="Proteomics",
+        comparison=long$comparison, pkg_id="Pck005", layer_name=sh, omics_type=otype,
         model=meta$model, treatment=meta$treatment, time_h=meta$time_h,
         pmid=meta$pmid, repository=meta$repository)
     }, error=function(e) NULL)
