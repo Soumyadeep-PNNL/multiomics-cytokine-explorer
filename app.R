@@ -216,6 +216,25 @@ ui <- page_navbar(
   theme = bs_theme(bootswatch = "flatly", base_font = font_google("Inter")),
   bg    = "#2c3e50",
 
+  # ── CSS: fix nav-tab label visibility (flatly theme makes active text white) ──
+  header = tags$head(tags$style(HTML("
+    /* Inner navset_tab: active tab text */
+    .nav-tabs .nav-link.active {
+      color: #2c3e50 !important;
+      background-color: #ffffff !important;
+      border-color: #dee2e6 #dee2e6 #fff !important;
+    }
+    /* Inner navset_tab: inactive tab text */
+    .nav-tabs .nav-link {
+      color: #495057 !important;
+    }
+    .nav-tabs .nav-link:hover {
+      color: #2c3e50 !important;
+    }
+    /* Sidebar scrolling for tall filter panels */
+    .sidebar { overflow-y: auto; }
+  "))),
+
   # ── TAB 1: Overview ─────────────────────────────────────────────────────
   nav_panel("Overview",
     layout_sidebar(
@@ -224,7 +243,19 @@ ui <- page_navbar(
         selectizeInput("ov_model", "Cell/Tissue model", choices=NULL, multiple=TRUE),
         selectizeInput("ov_treat", "Treatment",         choices=NULL, multiple=TRUE),
         selectizeInput("ov_omics", "Omics type",        choices=NULL, multiple=TRUE),
-        checkboxInput("ov_sc", "Show scRNA/snRNA only", value=FALSE)
+        checkboxInput("ov_sc", "Show scRNA/snRNA only", value=FALSE),
+        hr(),
+        h6("Excluded / partial packages"),
+        tags$small(
+          tags$b("Not shown in plots:"), tags$br(),
+          tags$b("Pck012, Pck017"), " — alternative splicing (ΔPSI, no fold change)", tags$br(),
+          tags$b("Pck014"), " — phospho-intensity matrix (no gene identifiers)", tags$br(),
+          tags$b("Pck015"), " — top-down proteomics catalog (no differential stats)", tags$br(),
+          tags$b("Pck021 Metabolomics"), " — raw intensities only (no fold change)", tags$br(),
+          tags$br(),
+          tags$b("Replicate-averaged (exploratory):"), tags$br(),
+          "Pck011, Pck018, Pck019, Pck020, Pck021 Proteomics — no per-gene p-value available; treat as exploratory only."
+        )
       ),
       card(
         card_header("Package metadata — 25 data packages"),
@@ -256,7 +287,6 @@ ui <- page_navbar(
       navset_tab(
         nav_panel("Volcano",  plotlyOutput("bulk_volcano", height="520px")),
         nav_panel("MA Plot",  plotlyOutput("bulk_ma",      height="520px")),
-        nav_panel("Heatmap",  plotOutput( "bulk_heatmap",  height="560px")),
         nav_panel("Data Table", DTOutput("bulk_table"))
       )
     )
@@ -280,7 +310,6 @@ ui <- page_navbar(
       navset_tab(
         nav_panel("Volcano",    plotlyOutput("sc_volcano", height="520px")),
         nav_panel("MA Plot",    plotlyOutput("sc_ma",      height="520px")),
-        nav_panel("Heatmap",    plotOutput( "sc_heatmap",  height="560px")),
         nav_panel("Data Table", DTOutput("sc_table"))
       )
     )
@@ -429,12 +458,6 @@ server <- function(input, output, session) {
     ggplotly(p, tooltip="text")
   })
 
-  output$bulk_heatmap <- renderPlot({
-    df <- bulk_data(); req(nrow(df) > 0)
-    ph <- make_heatmap(df, title=paste(input$s_pkg, input$s_layer))
-    if (!is.null(ph)) print(ph)
-  })
-
   output$bulk_table <- renderDT({
     df <- bulk_data()
     show_cols <- c("gene_name","log2FC","pvalue","padj","comparison",
@@ -489,12 +512,6 @@ server <- function(input, output, session) {
     p  <- make_ma(df, title=paste(input$sc_pkg, "scRNA"),
                   pval_thr=d_scp(), lfc_thr=d_scl())
     ggplotly(p, tooltip="text")
-  })
-
-  output$sc_heatmap <- renderPlot({
-    df <- sc_data(); req(nrow(df) > 0)
-    ph <- make_heatmap(df, title=paste(input$sc_pkg, "scRNA"))
-    if (!is.null(ph)) print(ph)
   })
 
   output$sc_table <- renderDT({

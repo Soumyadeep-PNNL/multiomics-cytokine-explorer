@@ -43,7 +43,9 @@ normalize_colnames <- function(nms) {
   }
   list(
     gene = find_col(c(
-      "external_gene_name", "gene[._]?names?$", "gene[._]?symbols?$",
+      "external_gene_name",
+      "gene.?symbols?$",        # gene_symbol, gene symbol, gene-symbol  ← check before names
+      "gene.?names?$",          # gene_name, gene name, gene-name
       "genesymbol", "^symbol$", "^gene$", "^genes$", "^name$",
       "^column1$", "^protein$", "^proteins$", "majority.?protein",
       "metabolite", "featurename", "refseq.?accession"
@@ -51,16 +53,22 @@ normalize_colnames <- function(nms) {
     lfc  = find_col(c(
       "log2foldchange", "log2fc", "log2_fc", "avg[._]?log2[._]?fc",
       "log2.?fold", "log2.?\\[fold", "logfc[._]", "log2fc[._]",
-      "log2_odds_ratio", "median.?logfc", "log2.?fold.?change"
+      "log2_odds_ratio", "median.?logfc", "log2.?fold.?change",
+      "log2.?\\(?fc",           # Log2(FC), log2(fc), log2 fc
+      "^logfc$"                 # plain logFC with no suffix (e.g. Pck003 RNA-seq HI)
     )),
     pval = find_col(c(
       "^pvalue$", "^p_val$", "^p.value$", "^p-value$", "^pvalues$",
       "^pval$", "p[._]?value[._]?1$", "^anova.?p", "^t.test.?p",
-      "student.*t.*p", "\\bp-?value\\b"
+      "student.*t.*p", "\\bp-?value\\b",
+      "pvalue[._]",             # Pvalue_2h, Pvalue_8h etc. (Pck003 RNA-seq Endo)
+      "p_val[._]"               # p_val_2h etc.
     )),
     padj = find_col(c(
-      "padj", "adj[._]?p[._]?val", "p[._]?adj", "^fdr$", "^qvalue$",
-      "q.value", "q-value", "adjusted.?p", "adj.p.val"
+      "padj", "adj[._]?p[._]?val", "p[._]?adj", "^fdr$", "^qvalues?$",
+      "q.value", "q-value", "adjusted.?p", "adj.p.val",
+      "^fdr[._]",               # FDR_2h, FDR_8h etc. (Pck003 RNA-seq Endo / HI)
+      "p.val.adj"               # p_val_adj (Pck024 Seurat output)
     ))
   )
 }
@@ -584,12 +592,8 @@ load_pck021 <- function(path, meta) {
       model=meta$model, treatment=meta$treatment, time_h=meta$time_h,
       pmid=meta$pmid, repository=meta$repository, replicate_averaged=TRUE)
   }, error=function(e) NULL)
-  d <- parse_sheet(path, "Metabolomics")
-  if (!is.null(d))
-    layers$metab <- make_layer(d$gene, d$lfc, d$pval, d$padj,
-      pkg_id="Pck021", layer_name="Metabolomics", omics_type="Metabolomics",
-      model=meta$model, treatment=meta$treatment, time_h=meta$time_h,
-      pmid=meta$pmid, repository=meta$repository)
+  # Pck021 Metabolomics: sheet contains raw intensity columns only (no fold change
+  # or statistical comparisons). Excluded — cannot derive meaningful log2FC or p-values.
   Filter(Negate(is.null), layers)
 }
 
@@ -624,14 +628,16 @@ load_pck023 <- function(path, meta) {
 }
 
 load_pck024 <- function(path, meta) {
+  # Each sheet has two comparison blocks side by side (e.g. IL-1β vs ctrl | IFNγ vs ctrl).
+  # Use parse_wide(2,3,4) so both comparisons are captured per cell-type sheet.
   sc_sheets <- setdiff(excel_sheets(path), c("ReadMe"))
   layers <- list()
   for (sh in sc_sheets) {
-    d <- parse_sheet(path, sh, skip=2)
-    if (is.null(d)) next
+    d <- parse_wide(path, sh, 2, 3, 4, ln_to_log2=FALSE)
+    if (is.null(d)||nrow(d)==0) next
     ct <- gsub("_markers","",sh,ignore.case=TRUE)
-    layers[[sh]] <- make_layer(d$gene, d$lfc, d$pval, d$padj,
-      comparison="cytokine_vs_ctrl", pkg_id="Pck024", layer_name="scRNA-seq", omics_type="scRNA-seq",
+    layers[[sh]] <- make_layer(d$gene_name, d$log2FC, d$pvalue, d$padj,
+      comparison=d$comparison, pkg_id="Pck024", layer_name="scRNA-seq", omics_type="scRNA-seq",
       model=meta$model, treatment=meta$treatment, time_h=meta$time_h,
       pmid=meta$pmid, repository=meta$repository, is_sc=TRUE, cell_type=ct)
   }
