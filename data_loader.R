@@ -1,12 +1,21 @@
 # ============================================================
-# data_loader.R  v3
+# data_loader.R  v4
 # ============================================================
 # Decisions recorded:
-#   Pck012, 017  → EXCLUDED (splicing ΔPSI data)
-#   Pck022       → ln(FC) silently converted to log2FC
-#   Pck013       → RNA-seq block only (miRNA block skipped)
-#   Pck011,018,019,020,021 → replicate-averaged + caveat flag
-#   Pck014,015   → skipped (no gene IDs / no stats)
+#   Pck012, 013, 017  → EXCLUDED (splicing/skip per user)
+#   Pck009            → RNA-seq + scRNA-seq (5 cell types)
+#   Pck010            → Both 8h + 24h timepoints
+#   Pck011            → mean per-patient logFC + Fisher combined p-value
+#   Pck014            → TMT phosphoproteomics: GroupA-GroupB as log2FC, FDR
+#   Pck015            → Top-down proteomics: logFC + adj.P.Val
+#   Pck016            → cyt vs. NT comparison only
+#   Pck018            → CT-NT vs NoCT-NT cytokine effect + Student T-test p
+#   Pck019            → Cytokine effect + Parp12 KD effect (2 comparisons)
+#   Pck020            → CT replicates mean as log2FC + one-sample t-test
+#   Pck021            → Proteomics + Metabolomics (CT_Eth vs NCT_Eth t-test)
+#   Pck022            → ln(FC) converted to log2FC; all 3 comparisons
+#   Pck024            → 6h: IL-1β, IFNγ, IFNγ+IL-1β; 18h: IFNγ+IL-1β
+#   Pck025            → Discovery + Validation RNA-seq + Proteomics (sex-stratified)
 # ============================================================
 
 suppressPackageStartupMessages({
@@ -489,15 +498,51 @@ load_pck010 <- function(path, meta) {
 }
 
 load_pck011 <- function(path, meta) {
+  # Structure: row 9 = header; .up block cols 1-17, .down block cols 20-36 (1-based)
+  # logFC1-5 at cols 8,10,12,14,16 (.up) / 27,29,31,33,35 (.down)
+  # pval1-5  at cols 9,11,13,15,17 (.up) / 28,30,32,34,36 (.down)
+  fisher_pval <- function(pvec) {
+    # Fisher's combined probability: chi2 = -2*sum(ln(pi)), df = 2k
+    pv <- suppressWarnings(as.numeric(pvec))
+    pv <- pv[!is.na(pv) & pv > 0 & pv <= 1]
+    if (length(pv) == 0) return(NA_real_)
+    chi2 <- -2 * sum(log(pv))
+    pchisq(chi2, df = 2 * length(pv), lower.tail = FALSE)
+  }
+  mean_lfc <- function(vec) {
+    v <- suppressWarnings(as.numeric(vec))
+    v <- v[!is.na(v) & is.finite(v)]
+    if (length(v) == 0) return(NA_real_)
+    mean(v)
+  }
   tryCatch({
     df <- suppressMessages(read_excel(path, "RNA-seq", skip=8, .name_repair="minimal"))
-    names(df) <- make.unique(as.character(names(df)))
-    gene_v <- as.character(df[[3]])
-    lfc_v  <- suppressWarnings(as.numeric(df[[6]]))
-    pval_v <- suppressWarnings(as.numeric(df[[9]]))
-    keep   <- !is.na(gene_v) & !grepl("[._]", gene_v) & !is.na(lfc_v) & is.finite(lfc_v)
-    if (!any(keep)) return(list())
-    list(rnaseq=make_layer(gene_v[keep], lfc_v[keep], pval_v[keep], NA_real_,
+    nc <- ncol(df)
+    # Parse .up block (cols 1-17, gene at col 3)
+    up_gene  <- as.character(df[[3]])
+    up_lfc   <- vapply(seq_len(nrow(df)), function(i)
+      mean_lfc(df[i, intersect(c(8,10,12,14,16), seq_len(nc))]), numeric(1))
+    up_pval  <- vapply(seq_len(nrow(df)), function(i)
+      fisher_pval(df[i, intersect(c(9,11,13,15,17), seq_len(nc))]), numeric(1))
+    up_keep  <- !is.na(up_gene) & nzchar(up_gene) & up_gene != "NA" & !is.na(up_lfc)
+    # Parse .down block (cols 20-36, gene at col 22)
+    if (nc >= 22) {
+      dn_gene  <- as.character(df[[22]])
+      dn_lfc   <- vapply(seq_len(nrow(df)), function(i)
+        mean_lfc(df[i, intersect(c(27,29,31,33,35), seq_len(nc))]), numeric(1))
+      dn_pval  <- vapply(seq_len(nrow(df)), function(i)
+        fisher_pval(df[i, intersect(c(28,30,32,34,36), seq_len(nc))]), numeric(1))
+      dn_keep  <- !is.na(dn_gene) & nzchar(dn_gene) & dn_gene != "NA" & !is.na(dn_lfc)
+      gene_v <- c(up_gene[up_keep], dn_gene[dn_keep])
+      lfc_v  <- c(up_lfc[up_keep],  dn_lfc[dn_keep])
+      pval_v <- c(up_pval[up_keep], dn_pval[dn_keep])
+    } else {
+      gene_v <- up_gene[up_keep]
+      lfc_v  <- up_lfc[up_keep]
+      pval_v <- up_pval[up_keep]
+    }
+    if (length(gene_v) == 0) return(list())
+    list(rnaseq=make_layer(gene_v, lfc_v, pval_v, NA_real_,
       pkg_id="Pck011", layer_name="RNA-seq", omics_type="RNA-seq",
       model=meta$model, treatment=meta$treatment, time_h=meta$time_h,
       pmid=meta$pmid, repository=meta$repository, replicate_averaged=TRUE))
@@ -505,30 +550,82 @@ load_pck011 <- function(path, meta) {
 }
 
 load_pck012 <- function(path, meta) list()   # splicing — excluded
+load_pck013 <- function(path, meta) list()   # skipped per user decision
 
-load_pck013 <- function(path, meta) {
-  d <- parse_wide(path, "RNAseq", 3, 4, 5, first_block_only=TRUE)
-  if (is.null(d)||nrow(d)==0) return(list())
-  # "Fold Change" is raw FC → log2 transform
-  d$log2FC <- suppressWarnings(log2(abs(d$log2FC)) * sign(d$log2FC))
-  d <- d[is.finite(d$log2FC), ]
-  if (nrow(d)==0) return(list())
-  list(rnaseq=make_layer(d$gene_name, d$log2FC, d$pvalue, d$padj,
-    pkg_id="Pck013", layer_name="RNA-seq", omics_type="RNA-seq",
-    model=meta$model, treatment=meta$treatment, time_h=meta$time_h,
-    pmid=meta$pmid, repository=meta$repository))
+load_pck014 <- function(path, meta) {
+  # MaxQuant TMT phosphoproteomics — human islets IFNγ+IL-1β 24h
+  # Row 4 = column headers (patient IDs P1+..P8-).
+  # Key aggregate cols (1-based): gene=41, position=37, groupA_mean=19,
+  # groupB_mean=21, raw_pval=25, FDR=26, localization_prob=27
+  tryCatch({
+    df <- suppressMessages(read_excel(path, "Phosphoproteomics", skip=3, .name_repair="minimal"))
+    names(df) <- make.unique(as.character(names(df)))
+    nc <- ncol(df)
+    if (nc < 41) return(list())
+    gene_v  <- as.character(df[[41]])
+    pos_v   <- as.character(df[[37]])
+    grpA    <- suppressWarnings(as.numeric(df[[19]]))
+    grpB    <- suppressWarnings(as.numeric(df[[21]]))
+    pval_v  <- suppressWarnings(as.numeric(df[[25]]))
+    padj_v  <- suppressWarnings(as.numeric(df[[26]]))
+    # FC = GroupA (cytokine) − GroupB (control) in log2 space (TMT log-normalized)
+    lfc_v   <- grpA - grpB
+    # Site-tagged gene name: GENE_POSITION (e.g. YLPM1_634)
+    gene_site <- ifelse(!is.na(gene_v) & !is.na(pos_v) & nzchar(gene_v) & nzchar(pos_v),
+                        paste0(gene_v, "_", pos_v), gene_v)
+    keep <- !is.na(gene_site) & nzchar(gene_site) & gene_site != "NA" & !is.na(lfc_v)
+    if (!any(keep)) return(list())
+    list(phospho=make_layer(gene_site[keep], lfc_v[keep], pval_v[keep], padj_v[keep],
+      comparison="cytokine_vs_ctrl",
+      pkg_id="Pck014", layer_name="Phosphoproteomics", omics_type="Phosphoproteomics",
+      model=meta$model, treatment=meta$treatment, time_h=meta$time_h,
+      pmid=meta$pmid, repository=meta$repository))
+  }, error=function(e) list())
 }
 
-load_pck014 <- function(path, meta) list()   # phospho matrix, no gene IDs
-load_pck015 <- function(path, meta) list()   # top-down catalog, no stats
+load_pck015 <- function(path, meta) {
+  # Top-down proteomics — human islets IFNγ+IL-1β 24h
+  # Row 3 = column headers; Gene=col2, logFC=col13, P.Value=col14, adj.P.Val=col15
+  tryCatch({
+    df <- suppressMessages(read_excel(path, "Top-down Proteomics", skip=2, .name_repair="minimal"))
+    names(df) <- make.unique(as.character(names(df)))
+    nc <- ncol(df)
+    if (nc < 15) return(list())
+    gene_v  <- as.character(df[[2]])
+    lfc_v   <- suppressWarnings(as.numeric(df[[13]]))
+    pval_v  <- suppressWarnings(as.numeric(df[[14]]))
+    padj_v  <- suppressWarnings(as.numeric(df[[15]]))
+    keep <- !is.na(gene_v) & nzchar(gene_v) & gene_v != "NA" & !is.na(lfc_v)
+    if (!any(keep)) return(list())
+    list(prot=make_layer(gene_v[keep], lfc_v[keep], pval_v[keep], padj_v[keep],
+      comparison="cytokine_vs_ctrl",
+      pkg_id="Pck015", layer_name="Top-down Proteomics", omics_type="Proteomics",
+      model=meta$model, treatment=meta$treatment, time_h=meta$time_h,
+      pmid=meta$pmid, repository=meta$repository))
+  }, error=function(e) list())
+}
 
 load_pck016 <- function(path, meta) {
-  d <- parse_sheet(path, "DE_analysis", skip=1)
-  if (is.null(d)) return(list())
-  list(rnaseq=make_layer(d$gene, d$lfc, d$pval, d$padj,
-    pkg_id="Pck016", layer_name="RNA-seq (miRNA study)", omics_type="RNA-seq",
-    model=meta$model, treatment=meta$treatment, time_h=meta$time_h,
-    pmid=meta$pmid, repository=meta$repository))
+  # DE_analysis has 4 side-by-side comparisons:
+  # cols 1=Gene_symbol, 8-10=Drug vs NT, 11-13=cyt vs NT (our target),
+  # 14-16=cyt+drug vs NT, 17-19=cyt+drug vs cyt
+  # We extract only "cyt vs. NT" (cols 1, 11, 12, 13)
+  tryCatch({
+    df <- suppressMessages(read_excel(path, "DE_analysis", skip=1, .name_repair="minimal"))
+    names(df) <- make.unique(as.character(names(df)))
+    if (ncol(df) < 13) return(list())
+    gene_v  <- as.character(df[[1]])
+    lfc_v   <- suppressWarnings(as.numeric(df[[11]]))
+    pval_v  <- suppressWarnings(as.numeric(df[[12]]))
+    padj_v  <- suppressWarnings(as.numeric(df[[13]]))
+    keep    <- !is.na(gene_v) & nzchar(gene_v) & gene_v != "NA" & !is.na(lfc_v)
+    if (!any(keep)) return(list())
+    list(rnaseq=make_layer(gene_v[keep], lfc_v[keep], pval_v[keep], padj_v[keep],
+      comparison="cyt_vs_NT",
+      pkg_id="Pck016", layer_name="RNA-seq", omics_type="RNA-seq",
+      model=meta$model, treatment=meta$treatment, time_h=meta$time_h,
+      pmid=meta$pmid, repository=meta$repository))
+  }, error=function(e) list())
 }
 
 load_pck017 <- function(path, meta) list()   # splicing — excluded
@@ -552,49 +649,59 @@ load_pck018 <- function(path, meta) {
 }
 
 load_pck019 <- function(path, meta) {
+  # Row 5 = col headers; after skip=4: gene=col3,
+  # CT1-NonTarget siRNA replicates = cols 12-15 (log2FC vs NoCT_NT baseline)
+  # CT1-PARP12 siRNA replicates    = cols 16-19
+  # T-test NoCT_NT vs CT_NT        = col 21
+  # T-test CT_NT vs CT_si (PARP12 KD in CT context) = col 22
   tryCatch({
-    raw <- suppressMessages(
-      read_excel(path, "Proteomics", col_names=FALSE, .name_repair="minimal")
-    )
-    cond_labels <- as.character(unlist(raw[4, ]))
-    cond_labels[is.na(cond_labels)|cond_labels=="NA"|trimws(cond_labels)==""] <- NA_character_
-    df   <- suppressMessages(read_excel(path, "Proteomics", skip=4, .name_repair="minimal"))
-    gene_v     <- as.character(df[[3]])
-    block_cols <- which(!is.na(cond_labels))
-    block_ends <- c(block_cols[-1]-1L, ncol(raw))
-    # Take first 4 condition blocks (cols 4-19)
-    main <- block_cols[block_cols >= 4 & block_cols <= 16]
-    results <- lapply(main, function(s) {
-      e   <- min(block_ends[which(block_cols==s)], s+3)
-      mat <- suppressWarnings(sapply(df[, s:e], as.numeric))
-      if (is.vector(mat)) mat <- matrix(mat, ncol=1)
-      data.frame(gene_name=gene_v, log2FC=avg_reps(mat),
-                 pvalue=NA_real_, padj=NA_real_,
-                 comparison=trimws(cond_labels[s]), stringsAsFactors=FALSE)
-    })
-    out <- do.call(rbind, results)
-    out <- out[!is.na(out$gene_name)&!is.na(out$log2FC), ]
-    if (nrow(out)==0) return(list())
-    list(prot=make_layer(out$gene_name, out$log2FC, out$pvalue, out$padj,
-      comparison=out$comparison,
-      pkg_id="Pck019", layer_name="Proteomics", omics_type="Proteomics",
-      model=meta$model, treatment=meta$treatment, time_h=meta$time_h,
-      pmid=meta$pmid, repository=meta$repository, has_stats=FALSE, replicate_averaged=TRUE))
+    df <- suppressMessages(read_excel(path, "Proteomics", skip=4, .name_repair="minimal"))
+    names(df) <- make.unique(as.character(names(df)))
+    gene_v      <- as.character(df[[3]])
+    ct_nt_mat   <- suppressWarnings(sapply(df[, 12:15], as.numeric))
+    ct_parp_mat <- suppressWarnings(sapply(df[, 16:19], as.numeric))
+    pval_cyt    <- suppressWarnings(as.numeric(df[[21]]))   # NoCT_NT vs CT_NT
+    pval_kd     <- suppressWarnings(as.numeric(df[[22]]))   # CT_NT vs CT_si
+    lfc_cyt     <- avg_reps(ct_nt_mat)                      # cytokine effect vs NoCT_NT
+    lfc_kd      <- avg_reps(ct_parp_mat) - avg_reps(ct_nt_mat)  # net KD effect in CT
+    keep_c      <- !is.na(gene_v) & !is.na(lfc_cyt)
+    keep_k      <- !is.na(gene_v) & !is.na(lfc_kd)
+    layers <- list()
+    if (any(keep_c))
+      layers$cyt <- make_layer(gene_v[keep_c], lfc_cyt[keep_c], pval_cyt[keep_c], NA_real_,
+        comparison="Cytokine_vs_Control",
+        pkg_id="Pck019", layer_name="Proteomics (CT-NT)", omics_type="Proteomics",
+        model=meta$model, treatment=meta$treatment, time_h=meta$time_h,
+        pmid=meta$pmid, repository=meta$repository, replicate_averaged=TRUE)
+    if (any(keep_k))
+      layers$kd <- make_layer(gene_v[keep_k], lfc_kd[keep_k], pval_kd[keep_k], NA_real_,
+        comparison="Parp12_KD_vs_ctrl_in_CT",
+        pkg_id="Pck019", layer_name="Proteomics (PARP12 KD)", omics_type="Proteomics",
+        model=meta$model, treatment=meta$treatment, time_h=meta$time_h,
+        pmid=meta$pmid, repository=meta$repository, replicate_averaged=TRUE)
+    Filter(Negate(is.null), layers)
   }, error=function(e) list())
 }
 
 load_pck020 <- function(path, meta) {
+  # Cols 8-12 are log2(Cytokine_treated / WT) per replicate (already log2FC vs WT).
+  # log2FC = mean of 5 replicates; p-value = one-sample t-test against 0.
   tryCatch({
     df <- suppressMessages(read_excel(path, "Proteomics", skip=7, .name_repair="minimal"))
     names(df) <- make.unique(as.character(names(df)))
     gene_v  <- as.character(df[[4]])
-    pval_v  <- suppressWarnings(as.numeric(df[[7]]))
-    mat_wt  <- suppressWarnings(sapply(df[, 8:12],  as.numeric))
-    mat_ct  <- suppressWarnings(sapply(df[, 13:17], as.numeric))
-    lfc_v   <- avg_reps(mat_ct) - avg_reps(mat_wt)
-    keep    <- !is.na(gene_v) & !is.na(lfc_v)
+    mat_ct  <- suppressWarnings(sapply(df[, 8:12], as.numeric))
+    if (is.vector(mat_ct)) mat_ct <- matrix(mat_ct, ncol=1)
+    lfc_v <- rowMeans(mat_ct, na.rm=TRUE)
+    # One-sample t-test: H0: mean log2FC == 0 for each protein
+    pval_v <- vapply(seq_len(nrow(mat_ct)), function(i) {
+      x <- mat_ct[i, !is.na(mat_ct[i, ])]
+      if (length(x) < 2) return(NA_real_)
+      tryCatch(t.test(x, mu=0)$p.value, error=function(e) NA_real_)
+    }, numeric(1))
+    keep <- !is.na(gene_v) & nzchar(gene_v) & gene_v != "NA" & !is.na(lfc_v)
     list(prot=make_layer(gene_v[keep], lfc_v[keep], pval_v[keep], NA_real_,
-      comparison="Cytokine vs WildType",
+      comparison="Cytokine_vs_WildType",
       pkg_id="Pck020", layer_name="Proteomics", omics_type="Proteomics",
       model=meta$model, treatment=meta$treatment, time_h=meta$time_h,
       pmid=meta$pmid, repository=meta$repository, replicate_averaged=TRUE))
@@ -603,6 +710,7 @@ load_pck020 <- function(path, meta) {
 
 load_pck021 <- function(path, meta) {
   layers <- list()
+  # --- Proteomics ---
   tryCatch({
     df <- suppressMessages(read_excel(path, "Proteomics", skip=6, .name_repair="minimal"))
     names(df) <- make.unique(as.character(names(df)))
@@ -610,16 +718,44 @@ load_pck021 <- function(path, meta) {
     pval_v   <- suppressWarnings(as.numeric(df[[5]]))
     mat_ctrl <- suppressWarnings(sapply(df[, 6:8],  as.numeric))
     mat_ct   <- suppressWarnings(sapply(df[, 9:11], as.numeric))
+    # Ctrl = ethanol vehicle; CT = cytokine + ethanol. Values are already log2FC vs ref.
     lfc_v    <- avg_reps(mat_ct) - avg_reps(mat_ctrl)
-    keep     <- !is.na(gene_v) & !is.na(lfc_v)
-    layers$prot <- make_layer(gene_v[keep], lfc_v[keep], pval_v[keep], NA_real_,
-      comparison="Cytokine vs Control",
-      pkg_id="Pck021", layer_name="Proteomics", omics_type="Proteomics",
-      model=meta$model, treatment=meta$treatment, time_h=meta$time_h,
-      pmid=meta$pmid, repository=meta$repository, replicate_averaged=TRUE)
+    keep     <- !is.na(gene_v) & nzchar(gene_v) & gene_v != "NA" & !is.na(lfc_v)
+    if (any(keep))
+      layers$prot <- make_layer(gene_v[keep], lfc_v[keep], pval_v[keep], NA_real_,
+        comparison="Cytokine_vs_Control",
+        pkg_id="Pck021", layer_name="Proteomics", omics_type="Proteomics",
+        model=meta$model, treatment=meta$treatment, time_h=meta$time_h,
+        pmid=meta$pmid, repository=meta$repository, replicate_averaged=TRUE)
   }, error=function(e) NULL)
-  # Pck021 Metabolomics: sheet contains raw intensity columns only (no fold change
-  # or statistical comparisons). Excluded — cannot derive meaningful log2FC or p-values.
+  # --- Metabolomics: CT_Eth (cols 2-5) vs NCT_Eth (cols 10-13), peak area intensities ---
+  tryCatch({
+    df_m <- suppressMessages(read_excel(path, "Metabolomics", skip=3, .name_repair="minimal"))
+    names(df_m) <- make.unique(as.character(names(df_m)))
+    metab_v  <- as.character(df_m[[1]])
+    ct_mat   <- suppressWarnings(sapply(df_m[, 2:5],  as.numeric))
+    nct_mat  <- suppressWarnings(sapply(df_m[, 10:13], as.numeric))
+    if (is.vector(ct_mat))  ct_mat  <- matrix(ct_mat,  ncol=1)
+    if (is.vector(nct_mat)) nct_mat <- matrix(nct_mat, ncol=1)
+    # log2 transform (add 1 to handle zeros)
+    lct  <- log2(ct_mat  + 1)
+    lnct <- log2(nct_mat + 1)
+    lfc_v <- rowMeans(lct, na.rm=TRUE) - rowMeans(lnct, na.rm=TRUE)
+    # Welch t-test per metabolite
+    pval_v <- vapply(seq_len(nrow(ct_mat)), function(i) {
+      a <- lct[i, !is.na(lct[i, ])]
+      b <- lnct[i, !is.na(lnct[i, ])]
+      if (length(a) < 2 || length(b) < 2) return(NA_real_)
+      tryCatch(t.test(a, b)$p.value, error=function(e) NA_real_)
+    }, numeric(1))
+    keep_m <- !is.na(metab_v) & nzchar(metab_v) & metab_v != "NA" & !is.na(lfc_v)
+    if (any(keep_m))
+      layers$metab <- make_layer(metab_v[keep_m], lfc_v[keep_m], pval_v[keep_m], NA_real_,
+        comparison="CT_Eth_vs_NCT_Eth",
+        pkg_id="Pck021", layer_name="Metabolomics", omics_type="Metabolomics",
+        model=meta$model, treatment=meta$treatment, time_h=meta$time_h,
+        pmid=meta$pmid, repository=meta$repository, replicate_averaged=TRUE)
+  }, error=function(e) NULL)
   Filter(Negate(is.null), layers)
 }
 
@@ -654,14 +790,18 @@ load_pck023 <- function(path, meta) {
 }
 
 load_pck024 <- function(path, meta) {
-  # Each sheet has two comparison blocks side by side (e.g. IL-1β vs ctrl | IFNγ vs ctrl).
-  # Use parse_wide(2,3,4) so both comparisons are captured per cell-type sheet.
+  # Each sheet has 8 comparison blocks. We keep S2, S3, S4 (all 6h) and S6 (18h IFNγ+IL-1β).
+  # The comparison label has the subject sample in parens BEFORE "vs",
+  # so matching \\(S[2346]\\).*vs.*[Cc]ontrol avoids NMMA comparisons where S6 is the reference.
   sc_sheets <- setdiff(excel_sheets(path), c("ReadMe"))
   layers <- list()
   for (sh in sc_sheets) {
     d <- parse_wide(path, sh, 2, 3, 4, ln_to_log2=FALSE)
-    if (is.null(d)||nrow(d)==0) next
-    ct <- gsub("_markers","",sh,ignore.case=TRUE)
+    if (is.null(d) || nrow(d) == 0) next
+    # Keep only: subject is S2/S3/S4/S6 AND reference is Control
+    d <- d[grepl("\\(S[2346]\\).*[Vv]s\\.?.*[Cc]ontrol", d$comparison, perl=TRUE), ]
+    if (nrow(d) == 0) next
+    ct <- gsub("_markers","", sh, ignore.case=TRUE)
     layers[[sh]] <- make_layer(d$gene_name, d$log2FC, d$pvalue, d$padj,
       comparison=d$comparison, pkg_id="Pck024", layer_name="scRNA-seq", omics_type="scRNA-seq",
       model=meta$model, treatment=meta$treatment, time_h=meta$time_h,
@@ -700,8 +840,9 @@ load_all_data <- function() {
   data_dir <- resolve_data_dir()
   cat("Data directory:", data_dir, "\n")
 
+  # skip=1: row 1 is the merged title cell; row 2 has the real column headers
   meta_raw <- suppressMessages(
-    read_excel(file.path(data_dir, "Table 1-Metadata.xlsx"), .name_repair="minimal")
+    read_excel(file.path(data_dir, "Table 1-Metadata.xlsx"), skip=1, .name_repair="minimal")
   )
   meta_raw <- as.data.frame(meta_raw)
   names(meta_raw) <- tolower(gsub("[[:space:]]+","_",trimws(names(meta_raw))))
