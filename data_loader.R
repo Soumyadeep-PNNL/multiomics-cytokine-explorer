@@ -188,11 +188,18 @@ parse_wide <- function(path, sheet, group_row_i, header_row_i, data_start_i,
     if (!is.na(nm$gene)) {
       gene_v <- as.character(unlist(data_rows[, cols[nm$gene]]))
     } else if (i > 1) {
+      # Try to borrow gene from block 1; if block 1 also has no named gene col,
+      # fall back to block 1's first column (gene names without a header label).
       fc  <- block_starts[1]:block_ends[1]
       fn  <- normalize_colnames(hdr[fc])
-      gene_v <- if (!is.na(fn$gene)) as.character(unlist(data_rows[, fc[fn$gene]])) else NA_character_
+      if (!is.na(fn$gene)) {
+        gene_v <- as.character(unlist(data_rows[, fc[fn$gene]]))
+      } else {
+        gene_v <- as.character(unlist(data_rows[, block_starts[1]]))
+      }
     } else {
-      gene_v <- NA_character_
+      # Block 1 has no named gene column — use its first column as gene names.
+      gene_v <- as.character(unlist(data_rows[, cols[1]]))
     }
     lfc_v  <- suppressWarnings(as.numeric(unlist(data_rows[, cols[nm$lfc]])))
     pval_v <- if (!is.na(nm$pval)) suppressWarnings(as.numeric(unlist(data_rows[, cols[nm$pval]]))) else rep(NA_real_, nrow(data_rows))
@@ -325,18 +332,21 @@ load_pck003 <- function(path, meta) {
 }
 
 load_pck004 <- function(path, meta) {
-  sheets <- grep("^Data", excel_sheets(path), value = TRUE)
+  # Data 1-5 = scRNA-seq (one patient per sheet, wide-format blocks per stressor/cell-type)
+  # Data 6   = ATAC-seq — exclude; its header row structure is incompatible with skip=4
+  all_sheets <- grep("^Data", excel_sheets(path), value = TRUE)
+  sheets     <- setdiff(all_sheets, "Data 6")
   layers <- list()
   for (sh in sheets) {
     tryCatch({
       df <- suppressMessages(read_excel(path, sheet=sh, skip=4, .name_repair="minimal"))
       names(df) <- make.unique(as.character(names(df)))
       df <- df[rowSums(!is.na(df)) > 0, , drop=FALSE]
-      if (nrow(df) == 0) return(NULL)
+      if (nrow(df) == 0) next          # skip empty sheet, continue loop
       nm   <- normalize_colnames(names(df))
       g_i  <- if (!is.na(nm$gene)) nm$gene else 1L
       l_i  <- nm$lfc; p_i <- nm$pval; pa_i <- nm$padj
-      if (is.na(l_i)) return(NULL)
+      if (is.na(l_i)) next             # skip if no LFC column found
       ct_col <- grep("celltype",  tolower(names(df)), value=FALSE)[1]
       st_col <- grep("stressor",  tolower(names(df)), value=FALSE)[1]
       gene_v <- as.character(df[[g_i]])
