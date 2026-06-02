@@ -162,16 +162,20 @@ OMICS_COLORS <- c(
   "scRNA-seq"         = "#762A83"    # purple
 )
 
-# Mild pastel backgrounds per package (Material Design 100-level)
-PKG_BG <- c(
-  Pck001="#BBDEFB", Pck002="#C8E6C9", Pck003="#FFE0B2", Pck004="#F8BBD0",
-  Pck005="#E1BEE7", Pck006="#B3E5FC", Pck007="#DCEDC8", Pck008="#FFF9C4",
-  Pck009="#F0F4C3", Pck010="#B2EBF2", Pck011="#FFCCBC", Pck012="#D7CCC8",
-  Pck013="#CFD8DC", Pck014="#BBDEFB", Pck015="#C8E6C9", Pck016="#FFE0B2",
-  Pck017="#F8BBD0", Pck018="#E1BEE7", Pck019="#B3E5FC", Pck020="#DCEDC8",
-  Pck021="#FFF9C4", Pck022="#F0F4C3", Pck023="#B2EBF2", Pck024="#FFCCBC",
-  Pck025="#D7CCC8"
+# Paul Tol "muted" 10-colour palette — colorblind-safe, recycled for >10 packages
+TOL_MUTED <- c(
+  "#88CCEE","#44AA99","#117733","#332288","#DDCC77",
+  "#999933","#CC6677","#882255","#AA4499","#DDDDDD"
 )
+
+# Assign a soft (alpha-blended) version of TOL_MUTED to each package for stripes.
+# Alpha blending done via grDevices::adjustcolor; recycled if >10 packages appear.
+pkg_stripe_colour <- function(pkg_ids) {
+  ids <- sort(unique(pkg_ids))
+  base_cols <- TOL_MUTED[(seq_along(ids) - 1L) %% length(TOL_MUTED) + 1L]
+  soft_cols  <- grDevices::adjustcolor(base_cols, alpha.f = 0.22)
+  setNames(soft_cols, ids)
+}
 
 
 
@@ -227,26 +231,25 @@ make_bulk_dotplot <- function(df, xlabel_fmt="treat_time_model",
   th <- if("time_h_clean"   %in% names(df) && !all(is.na(df$time_h_clean)))
           df$time_h_clean   else df$time_h
 
+  # Clean 3-line label — package info shown via coloured stripe, not axis text
   df$ds_label  <- make_ds_label(tc, ma, th, xlabel_fmt)
-  # Append [PckNNN] to label so each column shows its source package
-  pkg_per_label <- tapply(df$pkg_id, df$ds_label, function(x) paste(unique(x), collapse="/"))
-  df$ds_label_pkg <- paste0(as.character(df$ds_label), "\n[",
-                             pkg_per_label[as.character(df$ds_label)], "]")
-  df$ds_label  <- factor(df$ds_label_pkg, levels=unique(df$ds_label_pkg))
+  df$ds_label  <- factor(df$ds_label, levels=unique(df$ds_label))
   df$gene_name <- droplevels(df$gene_name)
 
   n_genes <- nlevels(df$gene_name)
   n_cols  <- nlevels(df$ds_label)
 
-  # ── Alternating grey/white column stripes (replaces per-package colours) ───
-  # (Fixes glitches #1, #2, #6, #9: rect misalignment, crash, 25-entry legend)
+  # ── Per-package coloured column stripes (Option A) ─────────────────────────
+  # bg carries pkg_id so each column is tinted by its source package.
   bg <- df %>%
-    dplyr::distinct(ds_label, omics_type) %>%
+    dplyr::distinct(ds_label, pkg_id, omics_type) %>%
     dplyr::arrange(omics_type, as.integer(ds_label)) %>%
     dplyr::group_by(omics_type) %>%
-    dplyr::mutate(x_pos  = dplyr::row_number(),
-                  stripe = (x_pos %% 2 == 0)) %>%
+    dplyr::mutate(x_pos = dplyr::row_number()) %>%
     dplyr::ungroup()
+
+  # Build palette for exactly the packages present in this search result
+  pkg_palette <- pkg_stripe_colour(bg$pkg_id)
 
   # ── -log10(p) capped at 20; NA pvalue → size = min ────────────────────────
   df$neglog10p <- pmin(-log10(pmax(df$pvalue, 1e-300)), 20)
@@ -275,11 +278,17 @@ make_bulk_dotplot <- function(df, xlabel_fmt="treat_time_model",
       data    = bg,
       mapping = aes(xmin  = x_pos - 0.5, xmax = x_pos + 0.5,
                     ymin  = 0.5,          ymax = n_genes + 0.5,
-                    fill  = stripe),
-      inherit.aes = FALSE, show.legend = FALSE
+                    fill  = pkg_id),
+      inherit.aes = FALSE
     ) +
-    scale_fill_manual(values = c("TRUE" = "#f0f0f0", "FALSE" = "#ffffff"),
-                      guide = "none") +
+    scale_fill_manual(
+      values = pkg_palette,
+      name   = "Package",
+      guide  = guide_legend(
+        ncol         = 1,
+        override.aes = list(alpha = 0.7, size = 4, colour = NA)
+      )
+    ) +
     # Interactive points
     geom_point_interactive(
       aes(size     = neglog10p,
@@ -323,7 +332,8 @@ make_bulk_dotplot <- function(df, xlabel_fmt="treat_time_model",
       legend.text        = element_text(size = 9),
       legend.title       = element_text(size = 10, face = "bold"),
       plot.caption       = element_text(size = 8, color = "grey50"),
-      plot.margin        = margin(6, 10, 6, 6)
+      plot.margin        = margin(6, 10, 6, 6),
+      strip.clip         = "off"   # prevents long facet labels (e.g. ATAC-seq) being cut
     )
 }
 
