@@ -290,26 +290,36 @@ make_bulk_dotplot <- function(df, xlabel_fmt="treat_time_model",
       name   = "Package",
       guide  = guide_legend(
         ncol         = 1,
-        override.aes = list(alpha = 0.7, size = 4, colour = "transparent")
+        override.aes = list(alpha = 0.7, size = 5)
       )
     ) +
-    # Interactive points — shape 21: fill=log2FC, colour=outline for sig dots
+    # Outline ring for SIGNIFICANT dots only — drawn as a static separate layer
+    # (uses constant colour, not a scale, so no conflict with scale_fill_manual)
+    geom_point(
+      data = df[!is.na(df$sig_status) & df$sig_status != "NS", , drop=FALSE],
+      aes(x = ds_label, y = gene_name, size = neglog10p),
+      shape  = 21,
+      fill   = NA,
+      colour = "#666666",
+      stroke = 0.85,
+      alpha  = 0.90,
+      inherit.aes = FALSE
+    ) +
+    # Interactive filled dots — shape 16, colour=log2FC (separate from fill scale)
     geom_point_interactive(
       aes(size     = neglog10p,
-          fill     = log2FC,
-          colour   = ifelse(sig_status == "NS" | is.na(sig_status), "transparent", "#888888"),
+          colour   = log2FC,
           alpha    = I(pt_alpha),
           tooltip  = tip_html,
           data_id  = paste0(gene_name, "_", ds_label)),
-      shape  = 21,
-      stroke = 0.75
+      shape = 16
     ) +
-    scale_colour_identity() +
     facet_grid(. ~ omics_type, scales = "free_x", space = "free_x") +
     scale_x_discrete(guide  = guide_axis(n.dodge = 2),
                        expand = expansion(add = c(0.45, 0.45))) +
     # PuOr diverging palette — colorblind-safe for all vision types
-    scale_fill_gradient2(
+    # colour= maps to geom_point_interactive; fill= maps to geom_rect → no conflict
+    scale_colour_gradient2(
       low      = "#7B3294",   # purple  (low = downregulated)
       mid      = "white",
       high     = "#E66101",   # orange  (high = upregulated)
