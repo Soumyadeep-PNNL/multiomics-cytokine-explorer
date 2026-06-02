@@ -113,7 +113,9 @@ derive_time_h <- function(time_h_meta, comparison) {
 
 # ── X-axis label builder ──────────────────────────────────────────────────────
 make_ds_label <- function(treat_c, model_a, time_c, fmt="treat_time_model") {
-  t <- ifelse(is.na(treat_c)|!nzchar(treat_c), "?",  treat_c)
+  # Compact treatment: remove spaces around "+" to shorten axis labels
+  compact <- function(x) gsub("\\s*\\+\\s*", "+", trimws(x))
+  t <- compact(ifelse(is.na(treat_c)|!nzchar(treat_c), "?",  treat_c))
   m <- ifelse(is.na(model_a)|!nzchar(model_a), "?",  model_a)
   d <- ifelse(is.na(time_c) |!nzchar(time_c),  "?h", time_c)
   switch(fmt,
@@ -299,6 +301,7 @@ make_bulk_dotplot <- function(df, xlabel_fmt="treat_time_model",
       stroke = 0.3
     ) +
     facet_grid(. ~ omics_type, scales = "free_x", space = "free_x") +
+    scale_x_discrete(guide = guide_axis(n.dodge = 2)) +
     # PuOr diverging palette — colorblind-safe for all vision types
     scale_colour_gradient2(
       low      = "#7B3294",   # purple  (low = downregulated)
@@ -318,7 +321,8 @@ make_bulk_dotplot <- function(df, xlabel_fmt="treat_time_model",
          caption = if(has_sig) "Opacity: filled = significant, faded = NS at selected thresholds" else NULL) +
     theme_bw(base_size = 13) +
     theme(
-      axis.text.x       = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 10),
+      axis.text.x       = element_text(angle = 90, hjust = 1, vjust = 0.5,
+                                        size = 8.5, lineheight = 0.82),
       axis.text.y       = element_text(size = 11),
       strip.text        = element_text(face = "bold", size = 11, color = "#2c3e50"),
       strip.background  = element_rect(fill = "#dde3ea", color = "#b0bec5"),
@@ -804,8 +808,9 @@ server <- function(input, output, session) {
     n_genes <- length(unique(df$gene_name))
     n_cols  <- length(unique(df$ds_label))
     # Dynamic SVG size: scales with data — enables scroll in fixed-height container
-    w_svg <- max(9,  n_cols  * 0.70)
-    h_svg <- max(5,  n_genes * 0.60 + 2)
+    # 1.25 in per column comfortably fits 3-line labels at size 8.5 with n.dodge=2
+    w_svg <- max(9,  n_cols  * 1.25)
+    h_svg <- max(5,  n_genes * 0.60 + 3)   # +3 extra for dodged x-axis rows
     girafe(
       ggobj      = p,
       width_svg  = w_svg,
