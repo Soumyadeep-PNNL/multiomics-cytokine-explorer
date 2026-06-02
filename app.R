@@ -202,7 +202,8 @@ empty_dt <- function(msg="No results") {
 }
 
 # ── Bulk dot plot (ggiraph — fixes all 20 conversion glitches) ───────────────
-make_bulk_dotplot <- function(df, xlabel_fmt="treat_time_model") {
+make_bulk_dotplot <- function(df, xlabel_fmt="treat_time_model",
+                              scale_label="log2FC") {
   if (is.null(df) || nrow(df) == 0)
     return(ggplot() +
              labs(title="No results — enter gene names and click Search") +
@@ -227,7 +228,11 @@ make_bulk_dotplot <- function(df, xlabel_fmt="treat_time_model") {
           df$time_h_clean   else df$time_h
 
   df$ds_label  <- make_ds_label(tc, ma, th, xlabel_fmt)
-  df$ds_label  <- factor(df$ds_label, levels=unique(df$ds_label))
+  # Append [PckNNN] to label so each column shows its source package
+  pkg_per_label <- tapply(df$pkg_id, df$ds_label, function(x) paste(unique(x), collapse="/"))
+  df$ds_label_pkg <- paste0(as.character(df$ds_label), "\n[",
+                             pkg_per_label[as.character(df$ds_label)], "]")
+  df$ds_label  <- factor(df$ds_label_pkg, levels=unique(df$ds_label_pkg))
   df$gene_name <- droplevels(df$gene_name)
 
   n_genes <- nlevels(df$gene_name)
@@ -291,7 +296,7 @@ make_bulk_dotplot <- function(df, xlabel_fmt="treat_time_model") {
       mid      = "white",
       high     = "#E66101",   # orange  (high = upregulated)
       midpoint = 0,
-      name     = "log2FC",
+      name     = scale_label,
       na.value = "grey70"
     ) +
     scale_size_continuous(
@@ -322,40 +327,91 @@ make_bulk_dotplot <- function(df, xlabel_fmt="treat_time_model") {
     )
 }
 
-# ── Bulk bar chart (ggiraph) ─────────────────────────────────────────────────
-make_bulk_bar <- function(df) {
+# ── Bulk bar chart (ggiraph) — one bar per package×gene×condition ─────────────
+make_bulk_bar <- function(df, scale_label="log2FC") {
   if (is.null(df) || nrow(df) == 0)
     return(ggplot() + labs(title="No results") + theme_minimal())
 
+  # ── Sort same way as dot plot ──────────────────────────────────────────────
+  df$sort_treat <- if("treatment_clean" %in% names(df)) df$treatment_clean else df$treatment
+  df$sort_time  <- suppressWarnings(
+    as.numeric(gsub("h$","",
+      if("time_h_clean" %in% names(df)) df$time_h_clean else df$time_h)))
+  df$sort_model <- if("model_abbrev" %in% names(df)) df$model_abbrev else df$model
+  df <- df[order(df$omics_type, df$sort_treat, df$sort_time, df$sort_model,
+                 df$pkg_id, na.last=TRUE), ]
+
   tc <- if("treatment_clean" %in% names(df) && !all(is.na(df$treatment_clean)))
           df$treatment_clean else df$treatment
-  ma <- if("model_abbrev"   %in% names(df) && !all(is.na(df$model_abbrev)))
-          df$model_abbrev   else df$model
-  th <- if("time_h_clean"   %in% names(df) && !all(is.na(df$time_h_clean)))
-          df$time_h_clean   else df$time_h
-  df$ds_label <- make_ds_label(tc, ma, th)
+  ma <- if("model_abbrev" %in% names(df) && !all(is.na(df$model_abbrev)))
+          df$model_abbrev else df$model
+  th <- if("time_h_clean"  %in% names(df) && !all(is.na(df$time_h_clean)))
+          df$time_h_clean  else df$time_h
 
-  df2 <- as.data.frame(df) %>%
-    dplyr::mutate(label_om = paste0("[", omics_type, "] ", ds_label)) %>%
-    dplyr::group_by(gene_name, label_om, omics_type) %>%
-    dplyr::summarise(log2FC = mean(log2FC, na.rm = TRUE), .groups = "drop") %>%
-    dplyr::arrange(omics_type, log2FC)
-  df2$label_om <- factor(df2$label_om, levels = unique(df2$label_om))
+  # Build bar label: [PckNNN] omics_type | condition
+  df$bar_label <- paste0("[", df$pkg_id, "] ", df$omics_type,
+                         " — ", tc, " ", th)
 
-  ggplot(df2, aes(x = log2FC, y = label_om, fill = omics_type,
-                  tooltip = paste0(gene_name, "\nlog2FC: ", round(log2FC, 3)),
-                  data_id = paste0(gene_name, "_", label_om))) +
-    geom_col_interactive(alpha = 0.85) +
-    geom_vline(xintercept = 0, color = "black", linewidth = 0.4) +
-    facet_wrap(~ gene_name, scales = "free_x") +
-    scale_fill_manual(values = OMICS_COLORS, na.value = "grey50") +
-    labs(x = "log2FC", y = NULL, fill = "Omics type") +
+  # One row per gene×bar_label (average only if same pkg+omics+condition has
+  # multiple comparison rows for the same gene — e.g. multi-timepoint)
+  df2 <- df %>%
+    dplyr::group_by(gene_name, bar_label, omics_type, pkg_id) %>%
+    dplyr::summarise(
+      log2FC = mean(log2FC, na.rm=TRUE),
+      pvalue = min(pvalue,  na.rm=TRUE),
+      padj   = min(padj,    na.rm=TRUE),
+      treatment_c = dplyr::first(tc),
+      model_a     = dplyr::first(ma),
+      time_h_c    = dplyr::first(th),
+      .groups = "drop"
+    ) %>%
+    # Within each gene facet, sort bars by log2FC descending
+    dplyr::group_by(gene_name) %>%
+    dplyr::arrange(dplyr::desc(log2FC), .by_group=TRUE) %>%
+    dplyr::ungroup()
+
+  # Factor levels per gene sorted by log2FC (each gene facet is independent)
+  df2$bar_label <- factor(df2$bar_label, levels=rev(unique(df2$bar_label)))
+
+  n_genes <- length(unique(df2$gene_name))
+  n_bars  <- nrow(df2) / max(n_genes, 1)
+
+  # Tooltip
+  df2$tip_html <- paste0(
+    "<b>", df2$gene_name, "</b>  [", df2$pkg_id, "] ", df2$omics_type, "<br/>",
+    "Treatment: ", df2$treatment_c, "  |  Time: ", df2$time_h_c, "<br/>",
+    "Model: ", df2$model_a, "<br/>",
+    scale_label, ": ", round(df2$log2FC, 3),
+    ifelse(!is.na(df2$padj),
+           paste0("  |  padj: ", signif(df2$padj, 3)),
+           ifelse(!is.na(df2$pvalue),
+                  paste0("  |  p: ", signif(df2$pvalue, 3)), ""))
+  )
+
+  ggplot(df2, aes(x = log2FC, y = bar_label,
+                  fill     = omics_type,
+                  tooltip  = tip_html,
+                  data_id  = paste0(gene_name, "_", bar_label))) +
+    geom_col_interactive(alpha = 0.85, colour = "white", linewidth = 0.2) +
+    geom_vline(xintercept = 0, colour = "grey30", linewidth = 0.5) +
+    facet_wrap(~ gene_name, scales = "free", ncol = min(n_genes, 4)) +
+    scale_fill_manual(values = OMICS_COLORS, na.value = "grey60",
+                      name = "Omics type") +
+    scale_x_continuous(expand = expansion(mult = 0.08)) +
+    labs(x = scale_label, y = NULL) +
     theme_bw(base_size = 12) +
     theme(
-      strip.text    = element_text(face = "bold", size = 11),
-      axis.text.y   = element_text(size = 9),
-      axis.text.x   = element_text(size = 10),
-      legend.position = "bottom"
+      strip.text        = element_text(face = "bold", size = 11, color = "#2c3e50"),
+      strip.background  = element_rect(fill = "#dde3ea", color = "#b0bec5"),
+      axis.text.y       = element_text(size = 9),
+      axis.text.x       = element_text(size = 10),
+      panel.grid.major.x = element_line(color = "grey88", linetype = "dashed"),
+      panel.grid.major.y = element_blank(),
+      panel.spacing      = unit(0.8, "lines"),
+      legend.position    = "bottom",
+      legend.key.size    = unit(0.7, "lines"),
+      legend.text        = element_text(size = 9),
+      plot.margin        = margin(6, 10, 6, 6)
     )
 }
 
@@ -458,8 +514,16 @@ ui <- page_navbar(
             "Treatment · Time · Model" = "treat_time_model",
             "Treatment · Model · Time" = "treat_model_time",
             "Model · Treatment · Time" = "model_treat_time",
-            "Treatment · Time (compact)" = "treat_time"
+            "Treatment · Time (compact)"   = "treat_time"
           ), selected="treat_time_model"),
+        hr(),
+        h6("Colour scale"),
+        selectInput("gs_zscale", NULL,
+          choices = c(
+            "log2FC (raw)"                        = "raw",
+            "z-score per gene (across packages)"  = "gene_z",
+            "z-score per omics type"               = "omics_z"
+          ), selected="raw"),
         hr(),
         h6("Data types"),
         uiOutput("gs_omics_ui"),
@@ -675,6 +739,29 @@ server <- function(input, output, session) {
     if (nrow(matched)==0) return(list(bulk=NULL, ptm=NULL, genes=genes))
 
     matched <- add_sig(matched, input$gs_pval, input$gs_pval, input$gs_lfc)
+
+    # ── Apply z-score scaling if requested (computed on raw FC so sig thresholds ─
+    # are evaluated on biological scale; z-scores replace log2FC for display only) ─
+    scale_mode  <- if(!is.null(input$gs_zscale)) input$gs_zscale else "raw"
+    scale_label <- switch(scale_mode,
+      gene_z  = "z-score\n(per gene)",
+      omics_z = "z-score\n(per omics)",
+      "log2FC"
+    )
+    if (scale_mode == "gene_z" && nrow(matched) > 1) {
+      matched <- matched %>%
+        dplyr::group_by(gene_name) %>%
+        dplyr::mutate(log2FC = {
+          v <- scale(log2FC)[,1]; v[is.nan(v)] <- 0; v }) %>%
+        dplyr::ungroup() %>% as.data.frame()
+    } else if (scale_mode == "omics_z" && nrow(matched) > 1) {
+      matched <- matched %>%
+        dplyr::group_by(omics_type) %>%
+        dplyr::mutate(log2FC = {
+          v <- scale(log2FC)[,1]; v[is.nan(v)] <- 0; v }) %>%
+        dplyr::ungroup() %>% as.data.frame()
+    }
+
     # Factor levels: queried genes first, then any PTM variants
     all_lev <- unique(c(genes, as.character(matched$gene_name)))
     matched$gene_name <- factor(matched$gene_name, levels=rev(all_lev))
@@ -685,9 +772,10 @@ server <- function(input, output, session) {
     bulk_df$gene_name <- droplevels(bulk_df$gene_name)
 
     list(
-      bulk  = bulk_df,
-      ptm   = matched[matched$omics_type %in% PTM_TYPES,],
-      genes = genes
+      bulk        = bulk_df,
+      ptm         = matched[matched$omics_type %in% PTM_TYPES,],
+      genes       = genes,
+      scale_label = scale_label
     )
   })
 
@@ -700,7 +788,9 @@ server <- function(input, output, session) {
              theme_minimal()
       return(girafe(ggobj=p, width_svg=8, height_svg=4))
     }
-    p       <- make_bulk_dotplot(df, xlabel_fmt = input$gs_xlabel)
+    p       <- make_bulk_dotplot(df,
+                              xlabel_fmt  = input$gs_xlabel,
+                              scale_label = if(!is.null(res$scale_label)) res$scale_label else "log2FC")
     n_genes <- length(unique(df$gene_name))
     n_cols  <- length(unique(df$ds_label))
     # Dynamic SVG size: scales with data — enables scroll in fixed-height container
@@ -733,13 +823,14 @@ server <- function(input, output, session) {
       p <- ggplot() + labs(title="No results") + theme_minimal()
       return(girafe(ggobj=p, width_svg=8, height_svg=4))
     }
-    p       <- make_bulk_bar(df)
+    p       <- make_bulk_bar(df, scale_label = if(!is.null(res$scale_label)) res$scale_label else "log2FC")
     n_genes <- length(unique(df$gene_name))
     n_cond  <- length(unique(df$ds_label))
+    n_bars_total <- length(unique(df$pkg_id)) * length(unique(df$omics_type))
     girafe(
       ggobj      = p,
-      width_svg  = max(8, n_genes * 2.5),
-      height_svg = max(4, n_cond  * 0.35 + 2),
+      width_svg  = max(8, min(n_genes, 4) * 4.0),
+      height_svg = max(5, n_bars_total * 0.45 + 2),
       options = list(
         opts_tooltip(
           css = paste0("background:white;border:1px solid #bbb;",
