@@ -1,12 +1,12 @@
 # Multiomics Cytokine Explorer
 
-An interactive R Shiny application for visualizing and querying multiomics data from cytokine-treated in vitro pancreatic models. The app integrates 25 curated data packages spanning RNA-seq, proteomics, phosphoproteomics, lipidomics, metabolomics, chromatin accessibility (ATAC-seq), and single-cell transcriptomics.
+This is a dataset resource from previously published multi-omics studies of pancreatic islets and β-cell models exposed to pro-inflammatory cytokines. The omics datasets are aggregated and quality-controlled into unified “data packages” for sharing via PNNL DataHub. The resource currently comprises 70 datasets from 23 studies organized into 25 data packages (Pck001–Pck025) spanning data from primary human islets, human β-cell lines (EndoC-βH1, iPSC-derived islet-like cells), mouse islets, and mouse β-cell lines (MIN6, β-TC-3, β-TC-6).
 
 ---
 
 ## Overview
 
-Chronic low-grade inflammation driven by pro-inflammatory cytokines (IFNα, IFNγ, IL-1β, TNFα) plays a central role in pancreatic beta-cell dysfunction and type 1 diabetes. This application provides a unified interface to explore how these cytokines remodel the molecular landscape across multiple omics layers and in vitro model systems, enabling cross-package gene and protein queries without requiring programming expertise.
+This interactive R Shiny application provides a unified interface to explore how pro-inflammatory cytokines (IFNα, IFNγ, IL-1β, TNFα) remodel the molecular landscape of pancreatic β-cells across multiple omics layers and in vitro model systems. It enables cross-package gene and protein queries without requiring programming expertise, supporting both exploratory data analysis and hypothesis generation relevant to type 1 diabetes and β-cell dysfunction.
 
 ---
 
