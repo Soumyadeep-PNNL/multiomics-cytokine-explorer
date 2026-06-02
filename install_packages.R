@@ -11,7 +11,8 @@ cran_packages <- c(
   "tidyr",
   "stringr",
   "ggplot2",
-  "plotly",       # Interactive plots
+  "plotly",       # Interactive plots (Single Cell tab)
+  "ggiraph",      # Interactive SVG plots — colorblind-safe dot/bar charts
   "DT",           # Interactive tables
   "pheatmap",     # Heatmap
   "ggrepel",      # Non-overlapping labels on volcano

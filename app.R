@@ -20,7 +20,7 @@ local({
 suppressPackageStartupMessages({
   library(shiny); library(bslib); library(dplyr); library(tidyr)
   library(ggplot2); library(plotly); library(DT)
-  library(ggrepel); library(scales)
+  library(ggrepel); library(scales); library(ggiraph)
 })
 
 source("data_loader.R")
@@ -147,18 +147,19 @@ PTM_TYPES  <- c("Phosphoproteomics","Redox Proteomics","Acetylomics")
 BULK_TYPES <- c("RNA-seq","Proteomics","Lipidomics","Metabolomics",
                 "ATAC-seq","ChIP-seq","UMI-4C")
 
+# Okabe-Ito palette — safe for all colour-vision deficiency types
 OMICS_COLORS <- c(
-  "RNA-seq"           = "#2196F3",
-  "Proteomics"        = "#F44336",
-  "Phosphoproteomics" = "#FF5722",
-  "Redox Proteomics"  = "#FF9800",
-  "Acetylomics"       = "#FFC107",
-  "Lipidomics"        = "#00BCD4",
-  "Metabolomics"      = "#795548",
-  "ATAC-seq"          = "#4CAF50",
-  "ChIP-seq"          = "#8BC34A",
-  "UMI-4C"            = "#607D8B",
-  "scRNA-seq"         = "#9C27B0"
+  "RNA-seq"           = "#0072B2",   # blue
+  "Proteomics"        = "#D55E00",   # vermillion
+  "Phosphoproteomics" = "#E69F00",   # orange
+  "Redox Proteomics"  = "#CC79A7",   # reddish-purple
+  "Acetylomics"       = "#F0E442",   # yellow
+  "Lipidomics"        = "#56B4E9",   # sky blue
+  "Metabolomics"      = "#009E73",   # green
+  "ATAC-seq"          = "#999999",   # grey
+  "ChIP-seq"          = "#000000",   # black
+  "UMI-4C"            = "#8C510A",   # brown
+  "scRNA-seq"         = "#762A83"    # purple
 )
 
 # Mild pastel backgrounds per package (Material Design 100-level)
@@ -200,109 +201,162 @@ empty_dt <- function(msg="No results") {
             options=list(dom="t", ordering=FALSE))
 }
 
-# ── Bulk dot plot ─────────────────────────────────────────────
+# ── Bulk dot plot (ggiraph — fixes all 20 conversion glitches) ───────────────
 make_bulk_dotplot <- function(df, xlabel_fmt="treat_time_model") {
-  if (is.null(df)||nrow(df)==0)
-    return(ggplot()+labs(title="No results — enter gene names and click Search")+theme_minimal())
+  if (is.null(df) || nrow(df) == 0)
+    return(ggplot() +
+             labs(title="No results — enter gene names and click Search") +
+             theme_minimal())
 
-  df$neglog10p <- pmin(-log10(pmax(df$pvalue,1e-300)),20)
+  # ── Sort FIRST, then build all derived vectors from the sorted df ──────────
+  # (Fixes glitch #4: tooltip mismatch after arrange)
+  df$sort_treat <- if("treatment_clean" %in% names(df)) df$treatment_clean else df$treatment
+  df$sort_time  <- suppressWarnings(
+    as.numeric(gsub("h$", "",
+      if("time_h_clean" %in% names(df)) df$time_h_clean else df$time_h)))
+  df$sort_model <- if("model_abbrev" %in% names(df)) df$model_abbrev else df$model
+  df <- df[order(df$omics_type, df$sort_treat, df$sort_time, df$sort_model,
+                 df$pkg_id, na.last=TRUE), ]
 
-  # Use cleaned columns when available, fall back to raw
+  # Extract display vectors AFTER sorting
   tc <- if("treatment_clean" %in% names(df) && !all(is.na(df$treatment_clean)))
           df$treatment_clean else df$treatment
-  ma <- if("model_abbrev" %in% names(df) && !all(is.na(df$model_abbrev)))
-          df$model_abbrev else abbrev_model_v(df$model)
-  th <- if("time_h_clean" %in% names(df) && !all(is.na(df$time_h_clean)))
-          df$time_h_clean else df$time_h
+  ma <- if("model_abbrev"   %in% names(df) && !all(is.na(df$model_abbrev)))
+          df$model_abbrev   else df$model
+  th <- if("time_h_clean"   %in% names(df) && !all(is.na(df$time_h_clean)))
+          df$time_h_clean   else df$time_h
 
-  df$ds_label <- make_ds_label(tc, ma, th, xlabel_fmt)
-
-  # ── Hierarchical sort: treatment → time (numeric h) → model → pkg ─────
-  df$sort_treat <- tc
-  df$sort_time  <- suppressWarnings(as.numeric(gsub("h$","",th)))
-  df$sort_model <- ma
-  df <- df %>%
-    arrange(omics_type, sort_treat, sort_time, sort_model, pkg_id)
-  df$ds_label <- factor(df$ds_label, levels=unique(df$ds_label))
+  df$ds_label  <- make_ds_label(tc, ma, th, xlabel_fmt)
+  df$ds_label  <- factor(df$ds_label, levels=unique(df$ds_label))
   df$gene_name <- droplevels(df$gene_name)
 
   n_genes <- nlevels(df$gene_name)
+  n_cols  <- nlevels(df$ds_label)
 
+  # ── Alternating grey/white column stripes (replaces per-package colours) ───
+  # (Fixes glitches #1, #2, #6, #9: rect misalignment, crash, 25-entry legend)
   bg <- df %>%
-    distinct(ds_label, pkg_id, omics_type) %>%
-    arrange(omics_type, as.integer(ds_label)) %>%
-    group_by(omics_type) %>%
-    mutate(x_pos = row_number()) %>%
-    ungroup()
+    dplyr::distinct(ds_label, omics_type) %>%
+    dplyr::arrange(omics_type, as.integer(ds_label)) %>%
+    dplyr::group_by(omics_type) %>%
+    dplyr::mutate(x_pos  = dplyr::row_number(),
+                  stripe = (x_pos %% 2 == 0)) %>%
+    dplyr::ungroup()
 
-  pck_in_plot <- sort(unique(bg$pkg_id))
-  pck_palette <- PKG_BG[pck_in_plot]
+  # ── -log10(p) capped at 20; NA pvalue → size = min ────────────────────────
+  df$neglog10p <- pmin(-log10(pmax(df$pvalue, 1e-300)), 20)
+  df$neglog10p[is.na(df$neglog10p)] <- 0
 
-  df$tip <- paste0("<b>",df$gene_name,"</b>\n",
-                   df$pkg_id," · ",df$omics_type,"\n",
-                   "Treatment: ",tc,"\n",
-                   "Model: ",ma,"  Time: ",th,"\n",
-                   "log2FC: ",round(df$log2FC,2),
-                   ifelse(!is.na(df$padj),
-                          paste0("  padj: ",signif(df$padj,3)),
-                          ifelse(!is.na(df$pvalue),
-                                 paste0("  p: ",signif(df$pvalue,3)),"")))
+  # ── Significance alpha (fixes glitch #5: sig_status never visualised) ──────
+  has_sig <- "sig_status" %in% names(df)
+  df$pt_alpha <- if(has_sig) ifelse(df$sig_status == "NS", 0.22, 0.92) else 0.85
 
-  ggplot(df, aes(x=ds_label, y=gene_name)) +
-    geom_rect(data=bg,
-              aes(xmin=x_pos-0.5, xmax=x_pos+0.5,
-                  ymin=0.5,       ymax=n_genes+0.5,
-                  fill=pkg_id),
-              alpha=0.28, inherit.aes=FALSE) +
-    geom_point(aes(size=neglog10p, color=log2FC, text=tip), alpha=0.90) +
-    facet_grid(.~omics_type, scales="free_x", space="free_x") +
-    scale_color_gradient2(low="#1565C0", mid="white", high="#C62828",
-                          midpoint=0, name="log2FC", na.value="grey70") +
-    scale_size_continuous(range=c(2,9), name="-log10(p)") +
-    scale_fill_manual(values=pck_palette, name="Study",
-                      guide=guide_legend(ncol=1, override.aes=list(alpha=0.6,size=4))) +
-    labs(x=NULL, y=NULL) +
-    theme_bw(base_size=12) +
-    theme(axis.text.x      = element_text(angle=55, hjust=1, size=7.5, lineheight=0.85),
-          axis.text.y      = element_text(size=10),
-          strip.text        = element_text(face="bold", size=10, color="#2c3e50"),
-          strip.background  = element_rect(fill="#ecf0f1", color="#bdc3c7"),
-          panel.grid.major  = element_line(color="grey92"),
-          panel.spacing     = unit(0.5,"lines"),
-          legend.position   = "right",
-          legend.box        = "vertical",
-          legend.box.just   = "top",
-          legend.margin     = margin(0,0,4,0),
-          legend.key.size   = unit(0.65,"lines"),
-          legend.text       = element_text(size=8),
-          legend.title      = element_text(size=9, face="bold"),
-          plot.margin       = margin(4,8,4,4))
+  # ── Rich tooltip built AFTER sort (fixes glitch #4) ──────────────────────
+  df$tip_html <- paste0(
+    "<b>", df$gene_name, "</b>  [", df$pkg_id, " · ", df$omics_type, "]<br/>",
+    "Treatment: ", tc, "<br/>",
+    "Model: ", ma, "  |  Time: ", th, "<br/>",
+    "log2FC: ", round(df$log2FC, 3),
+    ifelse(!is.na(df$padj),
+           paste0("  |  padj: ", signif(df$padj, 3)),
+           ifelse(!is.na(df$pvalue),
+                  paste0("  |  p: ", signif(df$pvalue, 3)), "")),
+    if(has_sig) paste0("  |  ", df$sig_status) else ""
+  )
+
+  ggplot(df, aes(x = ds_label, y = gene_name)) +
+    # Alternating background — faceted correctly because bg has omics_type column
+    geom_rect(
+      data    = bg,
+      mapping = aes(xmin  = x_pos - 0.5, xmax = x_pos + 0.5,
+                    ymin  = 0.5,          ymax = n_genes + 0.5,
+                    fill  = stripe),
+      inherit.aes = FALSE, show.legend = FALSE
+    ) +
+    scale_fill_manual(values = c("TRUE" = "#f0f0f0", "FALSE" = "#ffffff"),
+                      guide = "none") +
+    # Interactive points
+    geom_point_interactive(
+      aes(size     = neglog10p,
+          colour   = log2FC,
+          alpha    = I(pt_alpha),
+          tooltip  = tip_html,
+          data_id  = paste0(gene_name, "_", ds_label)),
+      stroke = 0.3
+    ) +
+    facet_grid(. ~ omics_type, scales = "free_x", space = "free_x") +
+    # PuOr diverging palette — colorblind-safe for all vision types
+    scale_colour_gradient2(
+      low      = "#7B3294",   # purple  (low = downregulated)
+      mid      = "white",
+      high     = "#E66101",   # orange  (high = upregulated)
+      midpoint = 0,
+      name     = "log2FC",
+      na.value = "grey70"
+    ) +
+    scale_size_continuous(
+      range  = c(2, 10),
+      name   = "-log10(p)",
+      breaks = c(1, 5, 10, 20),
+      labels = c("0.1", "1e-5", "1e-10", "≤10⁻²⁰")
+    ) +
+    labs(x = NULL, y = NULL,
+         caption = if(has_sig) "Opacity: filled = significant, faded = NS at selected thresholds" else NULL) +
+    theme_bw(base_size = 13) +
+    theme(
+      axis.text.x       = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 10),
+      axis.text.y       = element_text(size = 11),
+      strip.text        = element_text(face = "bold", size = 11, color = "#2c3e50"),
+      strip.background  = element_rect(fill = "#dde3ea", color = "#b0bec5"),
+      panel.grid.major.x = element_blank(),
+      panel.grid.major.y = element_line(color = "grey88", linetype = "dashed"),
+      panel.spacing      = unit(0.6, "lines"),
+      legend.position    = "right",
+      legend.box         = "vertical",
+      legend.box.spacing = unit(0.3, "cm"),
+      legend.key.size    = unit(0.7, "lines"),
+      legend.text        = element_text(size = 9),
+      legend.title       = element_text(size = 10, face = "bold"),
+      plot.caption       = element_text(size = 8, color = "grey50"),
+      plot.margin        = margin(6, 10, 6, 6)
+    )
 }
 
-# ── Bulk bar chart ────────────────────────────────────────────
+# ── Bulk bar chart (ggiraph) ─────────────────────────────────────────────────
 make_bulk_bar <- function(df) {
-  if (is.null(df)||nrow(df)==0)
-    return(ggplot()+labs(title="No results")+theme_minimal())
+  if (is.null(df) || nrow(df) == 0)
+    return(ggplot() + labs(title="No results") + theme_minimal())
 
-  tc <- if("treatment_clean" %in% names(df) && !all(is.na(df$treatment_clean))) df$treatment_clean else df$treatment
-  ma <- if("model_abbrev"    %in% names(df) && !all(is.na(df$model_abbrev)))    df$model_abbrev    else abbrev_model_v(df$model)
-  th <- if("time_h_clean"    %in% names(df) && !all(is.na(df$time_h_clean)))    df$time_h_clean    else df$time_h
+  tc <- if("treatment_clean" %in% names(df) && !all(is.na(df$treatment_clean)))
+          df$treatment_clean else df$treatment
+  ma <- if("model_abbrev"   %in% names(df) && !all(is.na(df$model_abbrev)))
+          df$model_abbrev   else df$model
+  th <- if("time_h_clean"   %in% names(df) && !all(is.na(df$time_h_clean)))
+          df$time_h_clean   else df$time_h
   df$ds_label <- make_ds_label(tc, ma, th)
-  df2 <- as.data.frame(df) %>%
-    mutate(label_om = paste0("[",omics_type,"] ", ds_label)) %>%
-    group_by(gene_name, label_om, omics_type) %>%
-    summarise(log2FC=mean(log2FC,na.rm=TRUE), .groups="drop") %>%
-    arrange(omics_type, log2FC)
-  df2$label_om <- factor(df2$label_om, levels=unique(df2$label_om))
 
-  ggplot(df2, aes(x=log2FC, y=label_om, fill=omics_type, text=gene_name)) +
-    geom_col() +
-    geom_vline(xintercept=0, color="black", linewidth=0.4) +
-    facet_wrap(~gene_name, scales="free_x") +
-    scale_fill_manual(values=OMICS_COLORS, na.value="grey50") +
-    labs(x="log2FC", y=NULL, fill="Omics") +
-    theme_bw(base_size=11) +
-    theme(strip.text=element_text(face="bold"), axis.text.y=element_text(size=7))
+  df2 <- as.data.frame(df) %>%
+    dplyr::mutate(label_om = paste0("[", omics_type, "] ", ds_label)) %>%
+    dplyr::group_by(gene_name, label_om, omics_type) %>%
+    dplyr::summarise(log2FC = mean(log2FC, na.rm = TRUE), .groups = "drop") %>%
+    dplyr::arrange(omics_type, log2FC)
+  df2$label_om <- factor(df2$label_om, levels = unique(df2$label_om))
+
+  ggplot(df2, aes(x = log2FC, y = label_om, fill = omics_type,
+                  tooltip = paste0(gene_name, "\nlog2FC: ", round(log2FC, 3)),
+                  data_id = paste0(gene_name, "_", label_om))) +
+    geom_col_interactive(alpha = 0.85) +
+    geom_vline(xintercept = 0, color = "black", linewidth = 0.4) +
+    facet_wrap(~ gene_name, scales = "free_x") +
+    scale_fill_manual(values = OMICS_COLORS, na.value = "grey50") +
+    labs(x = "log2FC", y = NULL, fill = "Omics type") +
+    theme_bw(base_size = 12) +
+    theme(
+      strip.text    = element_text(face = "bold", size = 11),
+      axis.text.y   = element_text(size = 9),
+      axis.text.x   = element_text(size = 10),
+      legend.position = "bottom"
+    )
 }
 
 # ── Single-cell dot plot ──────────────────────────────────────
@@ -421,8 +475,12 @@ ui <- page_navbar(
 
       tagList(
         navset_tab(
-          nav_panel("Dot Plot",      plotlyOutput("gs_dotplot", height="560px")),
-          nav_panel("Bar Chart",     plotlyOutput("gs_bar",     height="520px")),
+          nav_panel("Dot Plot",
+            div(style="overflow:auto; max-height:620px; width:100%; border:1px solid #e0e0e0; border-radius:4px;",
+              girafeOutput("gs_dotplot", height="auto", width="100%"))),
+          nav_panel("Bar Chart",
+            div(style="overflow:auto; max-height:580px; width:100%; border:1px solid #e0e0e0; border-radius:4px;",
+              girafeOutput("gs_bar", height="auto", width="100%"))),
           nav_panel("Summary Table", DTOutput("gs_table"))
         ),
         div(class="ptm-section",
@@ -633,25 +691,65 @@ server <- function(input, output, session) {
     )
   })
 
-  output$gs_dotplot <- renderPlotly({
+  output$gs_dotplot <- renderGirafe({
     res <- gs_all(); req(!is.null(res))
     df  <- res$bulk
-    if (is.null(df)||nrow(df)==0)
-      return(ggplotly(ggplot()+
-               labs(title="No bulk data found for these genes / filters")+
-               theme_minimal()))
-    p <- make_bulk_dotplot(df, xlabel_fmt=input$gs_xlabel)
-    ggplotly(p, tooltip="text") %>%
-      layout(legend=list(orientation="v", x=1.02, y=1))
+    if (is.null(df) || nrow(df) == 0) {
+      p <- ggplot() +
+             labs(title = "No bulk data found for these genes / filters") +
+             theme_minimal()
+      return(girafe(ggobj=p, width_svg=8, height_svg=4))
+    }
+    p       <- make_bulk_dotplot(df, xlabel_fmt = input$gs_xlabel)
+    n_genes <- length(unique(df$gene_name))
+    n_cols  <- length(unique(df$ds_label))
+    # Dynamic SVG size: scales with data — enables scroll in fixed-height container
+    w_svg <- max(9,  n_cols  * 0.70)
+    h_svg <- max(5,  n_genes * 0.60 + 2)
+    girafe(
+      ggobj      = p,
+      width_svg  = w_svg,
+      height_svg = h_svg,
+      options = list(
+        opts_tooltip(
+          css       = paste0("background:white;border:1px solid #bbb;",
+                             "padding:7px 10px;border-radius:5px;",
+                             "font-size:12px;line-height:1.5;",
+                             "box-shadow:2px 2px 6px rgba(0,0,0,.15);"),
+          use_fill  = FALSE,
+          delay_mouseover = 80
+        ),
+        opts_hover(css = "stroke:#333;stroke-width:1.2;cursor:pointer;"),
+        opts_zoom(min = 0.5, max = 5),
+        opts_sizing(rescale = FALSE)   # keep SVG at computed size; container scrolls
+      )
+    )
   })
 
-  output$gs_bar <- renderPlotly({
+  output$gs_bar <- renderGirafe({
     res <- gs_all(); req(!is.null(res))
     df  <- res$bulk
-    if (is.null(df)||nrow(df)==0)
-      return(ggplotly(ggplot()+labs(title="No results")+theme_minimal()))
-    p <- make_bulk_bar(df)
-    ggplotly(p, tooltip=c("text","x"))
+    if (is.null(df) || nrow(df) == 0) {
+      p <- ggplot() + labs(title="No results") + theme_minimal()
+      return(girafe(ggobj=p, width_svg=8, height_svg=4))
+    }
+    p       <- make_bulk_bar(df)
+    n_genes <- length(unique(df$gene_name))
+    n_cond  <- length(unique(df$ds_label))
+    girafe(
+      ggobj      = p,
+      width_svg  = max(8, n_genes * 2.5),
+      height_svg = max(4, n_cond  * 0.35 + 2),
+      options = list(
+        opts_tooltip(
+          css = paste0("background:white;border:1px solid #bbb;",
+                       "padding:6px 9px;border-radius:4px;font-size:12px;")
+        ),
+        opts_hover(css = "opacity:1;stroke:#333;stroke-width:0.8;"),
+        opts_zoom(min=0.5, max=5),
+        opts_sizing(rescale=FALSE)
+      )
+    )
   })
 
   output$gs_table <- renderDT({
