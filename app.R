@@ -235,6 +235,8 @@ make_bulk_dotplot <- function(df, xlabel_fmt="treat_time_model",
 
   # Clean 3-line label — package info shown via coloured stripe, not axis text
   df$ds_label  <- make_ds_label(tc, ma, th, xlabel_fmt)
+  # Remove rows with empty/NA labels (prevents trailing blank column)
+  df <- df[!is.na(df$ds_label) & nzchar(trimws(df$ds_label)), , drop=FALSE]
   df$ds_label  <- factor(df$ds_label, levels=unique(df$ds_label))
   df$gene_name <- droplevels(df$gene_name)
 
@@ -288,22 +290,26 @@ make_bulk_dotplot <- function(df, xlabel_fmt="treat_time_model",
       name   = "Package",
       guide  = guide_legend(
         ncol         = 1,
-        override.aes = list(alpha = 0.7, size = 4, colour = NA)
+        override.aes = list(alpha = 0.7, size = 4, colour = "transparent")
       )
     ) +
-    # Interactive points
+    # Interactive points — shape 21: fill=log2FC, colour=outline for sig dots
     geom_point_interactive(
       aes(size     = neglog10p,
-          colour   = log2FC,
+          fill     = log2FC,
+          colour   = ifelse(sig_status == "NS" | is.na(sig_status), "transparent", "#888888"),
           alpha    = I(pt_alpha),
           tooltip  = tip_html,
           data_id  = paste0(gene_name, "_", ds_label)),
-      stroke = 0.3
+      shape  = 21,
+      stroke = 0.75
     ) +
+    scale_colour_identity() +
     facet_grid(. ~ omics_type, scales = "free_x", space = "free_x") +
-    scale_x_discrete(guide = guide_axis(n.dodge = 2)) +
+    scale_x_discrete(guide  = guide_axis(n.dodge = 2),
+                       expand = expansion(add = c(0.45, 0.45))) +
     # PuOr diverging palette — colorblind-safe for all vision types
-    scale_colour_gradient2(
+    scale_fill_gradient2(
       low      = "#7B3294",   # purple  (low = downregulated)
       mid      = "white",
       high     = "#E66101",   # orange  (high = upregulated)
@@ -808,8 +814,8 @@ server <- function(input, output, session) {
     n_genes <- length(unique(df$gene_name))
     n_cols  <- length(unique(df$ds_label))
     # Dynamic SVG size: scales with data — enables scroll in fixed-height container
-    # 1.25 in per column comfortably fits 3-line labels at size 8.5 with n.dodge=2
-    w_svg <- max(9,  n_cols  * 1.25)
+    # 1.8 in per column gives room for 3-line labels with n.dodge=2
+    w_svg <- max(9,  n_cols  * 1.80)
     h_svg <- max(5,  n_genes * 0.60 + 3)   # +3 extra for dodged x-axis rows
     girafe(
       ggobj      = p,
