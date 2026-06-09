@@ -471,10 +471,15 @@ make_sc_dotplot <- function(df) {
   th <- if ("time_h_clean"   %in% names(df) && !all(is.na(df$time_h_clean)))
           df$time_h_clean   else df$time_h
 
+  df$# Include donor line for Pck004 (comparison = "Donor N")
+  is_donor  <- grepl("^Donor \\d+$", df$comparison, perl = TRUE)
+  donor_sfx <- ifelse(is_donor, paste0("\n", df$comparison), "")
+
   df$ds_label <- paste0(
     ifelse(is.na(ma) | !nzchar(ma), "?", ma), "\n",
     ifelse(is.na(tc) | !nzchar(tc), "?", gsub("\\s*\\+\\s*", "+", trimws(tc))), "\n",
-    ifelse(is.na(th) | !nzchar(th), "?h", th)
+    ifelse(is.na(th) | !nzchar(th), "?h", th),
+    donor_sfx
   )
   df$ds_label  <- factor(df$ds_label, levels = unique(df$ds_label))
   df$gene_name <- droplevels(df$gene_name)

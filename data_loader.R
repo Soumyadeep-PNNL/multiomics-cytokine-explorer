@@ -448,13 +448,14 @@ load_pck004 <- function(path, meta) {
                 !tolower(ct_v) %in% c("pp","poly","polyhormonal","polyhormone") # drops PP/poly cell types
         if (!any(keep)) next
 
-        # Tag with patient/sheet so individual donors are traceable
-        patient_label <- paste0("P", gsub("[^0-9]", "", sh))  # "Data 1" → "P1"
+        # Tag with donor/sheet so individual donors are traceable
+        donor_num   <- gsub("[^0-9]", "", sh)          # "Data 1" → "1"
+        donor_label <- paste0("Donor ", donor_num)     # "Donor 1"
 
         layer_key <- paste0(sh, "_si", si)
         layers[[layer_key]] <- make_layer(
           gene_v[keep], lfc_v[keep], pval_v[keep], padj_v[keep],
-          comparison = paste0(stressor_v[keep], " (", patient_label, ")"),
+          comparison = donor_label,   # "Donor 1" … "Donor 5" — used in facet title
           pkg_id     = "Pck004", layer_name = "scRNA-seq", omics_type = "scRNA-seq",
           model      = meta$model,
           treatment  = as.character(treat_v[keep]),
@@ -881,7 +882,7 @@ load_pck022 <- function(path, meta) {
     treat_v <- extract_sc_treatment_v(d$comparison)   # e.g. "IL-1β (S2) vs. Control" → "IL-1β"
     layers[[sh]] <- make_layer(d$gene_name, d$log2FC, d$pvalue, d$padj,
       comparison=d$comparison, pkg_id="Pck022", layer_name="scRNA-seq", omics_type="scRNA-seq",
-      model=meta$model, treatment=as.character(treat_v), time_h=meta$time_h,
+      model=meta$model, treatment=as.character(treat_v), time_h="6h",
       pmid=meta$pmid, repository=meta$repository, is_sc=TRUE, cell_type=ct)
   }
   Filter(Negate(is.null), layers)
@@ -902,7 +903,7 @@ load_pck023 <- function(path, meta) {
     treat_v <- extract_sc_treatment_v(d$comparison)
     layers[[sh]] <- make_layer(d$gene_name, d$log2FC, d$pvalue, d$padj,
       comparison=d$comparison, pkg_id="Pck023", layer_name="scRNA-seq", omics_type="scRNA-seq",
-      model=meta$model, treatment=as.character(treat_v), time_h=meta$time_h,
+      model=meta$model, treatment=as.character(treat_v), time_h="18h",
       pmid=meta$pmid, repository=meta$repository, is_sc=TRUE, cell_type=ct)
   }
   Filter(Negate(is.null), layers)
