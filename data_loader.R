@@ -445,7 +445,7 @@ load_pck004 <- function(path, meta) {
         keep <- !is.na(gene_v) & nzchar(gene_v) & gene_v != "NA" &
                 !is.na(lfc_v)  & !is.na(stressor_v) & nzchar(stressor_v) &
                 !is.na(as.character(treat_v)) &   # drops BFA, TG
-                !tolower(ct_v) %in% c("pp","poly") # drops PP/poly cell types
+                !tolower(ct_v) %in% c("pp","poly","polyhormonal","polyhormone") # drops PP/poly cell types
         if (!any(keep)) next
 
         # Tag with patient/sheet so individual donors are traceable
@@ -911,14 +911,14 @@ load_pck023 <- function(path, meta) {
 load_pck024 <- function(path, meta) {
   # Each sheet has 8 comparison blocks. We keep S2, S3, S4 (all 6h) and S6 (18h IFNγ+IL-1β).
   # The comparison label has the subject sample in parens BEFORE "vs",
-  # so matching \\(S[2346]\\).*vs.*[Cc]ontrol avoids NMMA comparisons where S6 is the reference.
+  # S2=IL-1b 6h, S3=IFNg 6h, S4=IFNg+IL-1b 6h, S5=IL-1b 18h, S6=IFNg+IL-1b 18h; S7/S8=NMMA (excluded).
   sc_sheets <- setdiff(excel_sheets(path), c("ReadMe"))
   layers <- list()
   for (sh in sc_sheets) {
     d <- parse_wide(path, sh, 2, 3, 4, ln_to_log2=FALSE)
     if (is.null(d) || nrow(d) == 0) next
-    # Keep only pure cytokine-vs-Control (S2/S3/S4/S6); drops NMMA and non-ctrl comparisons
-    d <- d[grepl("\\(S[2346]\\).*[Vv]s\\.?.*[Cc]ontrol", d$comparison, perl=TRUE) &
+    # Keep S2-S6 vs Control only (S5=IL-1b 18h was previously missed); drop NMMA
+    d <- d[grepl("\\(S[23456]\\).*[Vv]s\\.?.*[Cc]ontrol", d$comparison, perl=TRUE) &
            !grepl("NMMA", d$comparison, ignore.case=TRUE), ]
     if (nrow(d) == 0) next
     ct      <- gsub("_markers","", sh, ignore.case=TRUE)
