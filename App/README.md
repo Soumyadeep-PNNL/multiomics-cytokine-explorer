@@ -1,6 +1,6 @@
 # Multiomics Cytokine Explorer
 
-This is a dataset resource from previously published multi-omics studies of pancreatic islets and β-cell models exposed to pro-inflammatory cytokines. The omics datasets are aggregated and quality-controlled into unified "data packages" for sharing via PNNL DataHub. The resource currently comprises 70 datasets from 23 studies organized into 25 data packages (Pck001–Pck025) spanning data from primary human islets, human β-cell lines (EndoC-βH1, iPSC-derived islet-like cells), mouse islets, and mouse β-cell lines (MIN6, β-TC-3, β-TC-6).
+This is a dataset resource from previously published multi-omics studies of pancreatic islets and β-cell models exposed to pro-inflammatory cytokines. The omics datasets are aggregated and quality-controlled into unified “data packages” for sharing via PNNL DataHub. The resource currently comprises 70 datasets from 23 studies organized into 25 data packages (Pck001–Pck025) spanning data from primary human islets, human β-cell lines (EndoC-βH1, iPSC-derived islet-like cells), mouse islets, and mouse β-cell lines (MIN6, β-TC-3, β-TC-6).
 
 ---
 
@@ -59,18 +59,6 @@ This interactive R Shiny application provides a unified interface to explore how
 - Filter by model, cell type, and treatment comparison
 - Dot plot coloured by log2FC, sized by −log10(p-value), faceted by cell type
 
-### Download Data
-- Export the full parsed dataset (817,000+ rows across all 25 packages) as a CSV
-- Cascading sidebar filters narrow the export before download:
-  - **Data type** — select any combination of omics layers (RNA-seq, Proteomics, Phosphoproteomics, etc.)
-  - **Experimental model** — filter by cell line or primary tissue
-  - **Treatment** — select specific cytokine conditions
-  - **Time point** — select one or more duration values
-  - **Data package** — restrict to specific Pck IDs
-- Live row-count badge updates as filters change
-- Preview table shows a grouped summary (rows + unique genes) before downloading
-- Downloads as a timestamped CSV
-
 ### Overview
 - Searchable metadata table listing all 25 data packages with model, treatment, timepoint, omics types, replicates, PMID, and repository accession
 
@@ -79,44 +67,37 @@ This interactive R Shiny application provides a unified interface to explore how
 ## Repository Structure
 
 ```
-In-vitroCT treated exp-Shinnyapp/
-├── App/
-│   ├── app.R               # Shiny UI + server
-│   ├── data_loader.R       # Per-package Excel parsers (Pck001–Pck025)
-│   ├── build_cache.R       # One-time cache builder (run before first launch)
-│   ├── install_packages.R  # R package installer
-│   ├── HOW_TO_RUN.txt      # Quick-start instructions
-│   └── data_cache.rds      # Pre-built data cache (auto-generated, not tracked in git)
-│
-└── Files/                  # Source Excel data packages (not tracked in git — too large)
-    ├── Table 1-Metadata-Aap.xlsx
-    └── Pck_Analysis/
-        ├── Pck001.xlsx … Pck025.xlsx
+App/
+├── app.R               # Shiny UI + server
+├── data_loader.R       # Per-package Excel parsers (Pck001–Pck025)
+├── build_cache.R       # One-time cache builder (run before first launch)
+├── install_packages.R  # R package installer
+├── HOW_TO_RUN.txt      # Quick-start instructions
+└── data_cache.rds      # Pre-built data cache (auto-generated, not tracked in git)
+
+Files/
+├── Table 1-Metadata.xlsx        # Master metadata table
+└── Pck_Analysis/
+    ├── Pck001.xlsx
+    ├── Pck002.xlsx
+    └── ... (Pck001–Pck025)
 ```
 
 ---
 
 ## Quick Start
 
-**1. Clone the repository:**
-```bash
-git clone https://github.com/Soumyadeep-PNNL/multiomics-cytokine-explorer.git
-cd multiomics-cytokine-explorer
-```
-
-**2. Obtain the source data files** — contact the repository owner to get the `Files/` directory (Excel data packages). Place them in the project root so the path `Files/Pck_Analysis/Pck001.xlsx` etc. is valid.
-
-**3. Install R dependencies** (first time only):
+**1. Install R dependencies** (first time only):
 ```r
 source("App/install_packages.R")
 ```
 
-**4. Run the app** from RStudio — open `App/app.R` and click **Run App**, or from the R console:
+**2. Run the app** from RStudio — open `App/app.R` and click **Run App**, or from the R console:
 ```r
 shiny::runApp("App", launch.browser = TRUE)
 ```
 
-On first launch the app parses all 25 Excel files and saves a cache (`App/data_cache.rds`). This takes approximately 1–2 minutes. Subsequent launches load instantly from cache.
+On first launch the app parses all 25 Excel files and saves a cache (`data_cache.rds`). This takes approximately 1–2 minutes. Subsequent launches load instantly from cache.
 
 ---
 

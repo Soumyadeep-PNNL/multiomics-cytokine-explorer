@@ -1,5 +1,31 @@
+# Large data files — not tracked in git
 Files/
-App/data_cache.rds
-data_cache.rds
+Parsed_Data/
+
+# Auto-generated R cache
+*.rds
+
+# Failed / empty Excel exports at root
+parsed_dataset.xlsx
+parsed_proteomics_and_epigenomics.xlsx
+parsed_singlecell.xlsx
+
+# Old app version (archive only — contains no new code)
+AppV1/
+AppV2/
+
+# R / RStudio
+.Rproj.user/
+*.Rproj
+.Rhistory
+.RData
+.Rprofile
+
+# macOS
 .DS_Store
-*.pptx
+__MACOSX/
+
+# Python cache (from parse_data.py)
+__pycache__/
+*.pyc
+*.pyo

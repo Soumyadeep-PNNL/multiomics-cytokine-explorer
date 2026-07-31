@@ -1,6 +1,6 @@
 # ============================================================
-# Multiomics In Vitro Cytokine Explorer — v6
-# Tabs: Overview | Bulk Gene Search | Single Cell
+# Multiomics In Vitro Cytokine Explorer — v7
+# Tabs: Overview | Bulk Gene Search | Download Data | Single Cell
 # ============================================================
 # GIT REMINDER — run after every session:
 #   cd "/Users/sark224/Library/CloudStorage/OneDrive-PNNL/Documents/Projects/In-vitroCT treated exp-Shinnyapp"
@@ -690,7 +690,56 @@ ui <- page_navbar(
     )
   ),
 
-  # ── TAB 3: Single Cell ───────────────────────────────────────
+  # ── TAB 3: Download Data ─────────────────────────────────────
+  nav_panel("Download Data",
+    layout_sidebar(
+      sidebar = sidebar(width = 310,
+        h5(icon("download"), " Download parsed data"),
+        tags$p(style="font-size:12px;color:#666;line-height:1.5;",
+          "Filter and download any subset of the full parsed dataset.",
+          " Leave a filter blank to include all values for that category."),
+        hr(),
+
+        h6("1. Data type"),
+        checkboxGroupInput("dl_omics", NULL,
+          choices  = c(BULK_TYPES, "scRNA-seq"),
+          selected = BULK_TYPES),
+        hr(),
+
+        h6("2. Experimental model"),
+        selectizeInput("dl_model", NULL, choices = NULL, multiple = TRUE,
+          options = list(placeholder = "(all models)")),
+        hr(),
+
+        h6("3. Treatment"),
+        selectizeInput("dl_treat", NULL, choices = NULL, multiple = TRUE,
+          options = list(placeholder = "(all treatments)")),
+        hr(),
+
+        h6("4. Time point"),
+        selectizeInput("dl_time", NULL, choices = NULL, multiple = TRUE,
+          options = list(placeholder = "(all time points)")),
+        hr(),
+
+        h6("5. Data package"),
+        selectizeInput("dl_pkgs", NULL, choices = NULL, multiple = TRUE,
+          options = list(placeholder = "(all packages)")),
+        hr(),
+
+        uiOutput("dl_row_count_ui"),
+        tags$br(),
+        downloadButton("dl_full_csv", "Download as CSV",
+                       class = "btn-primary w-100")
+      ),
+
+      card(
+        card_header("Preview — rows per data type / model / package"),
+        DTOutput("dl_summary_tbl")
+      )
+    )
+  ),
+
+  # ── TAB 4: Single Cell ───────────────────────────────────────
   nav_panel("Single Cell",
     layout_sidebar(
       sidebar = sidebar(width=300,
@@ -1019,6 +1068,140 @@ server <- function(input, output, session) {
         )
         if (!is.null(all_df)) write.csv(all_df, f, row.names=FALSE)
       }
+    }
+  )
+
+  # ── Download Data tab ────────────────────────────────────────
+
+  # Step 1: filter by omics type
+  dl_after_omics <- reactive({
+    df <- FLAT
+    sel <- input$dl_omics
+    if (length(sel) > 0) df <- df[df$omics_type %in% sel, , drop = FALSE]
+    df
+  })
+
+  # Step 2: populate model choices (cascade from omics)
+  observe({
+    models <- sort(unique(na.omit(dl_after_omics()$model_abbrev)))
+    updateSelectizeInput(session, "dl_model",
+      choices = c("(all models)" = "", models), server = TRUE)
+  })
+
+  dl_after_model <- reactive({
+    df    <- dl_after_omics()
+    sel_m <- input$dl_model[nzchar(input$dl_model)]
+    if (length(sel_m) > 0) df <- df[df$model_abbrev %in% sel_m, , drop = FALSE]
+    df
+  })
+
+  # Step 3: populate treatment choices (cascade from omics + model)
+  observe({
+    treats <- sort(unique(na.omit(dl_after_model()$treatment_clean)))
+    updateSelectizeInput(session, "dl_treat",
+      choices = c("(all treatments)" = "", treats), server = TRUE)
+  })
+
+  dl_after_treat <- reactive({
+    df    <- dl_after_model()
+    sel_t <- input$dl_treat[nzchar(input$dl_treat)]
+    if (length(sel_t) > 0) df <- df[df$treatment_clean %in% sel_t, , drop = FALSE]
+    df
+  })
+
+  # Step 4: populate time choices (cascade from above)
+  observe({
+    times <- sort(unique(na.omit(dl_after_treat()$time_h_clean)))
+    updateSelectizeInput(session, "dl_time",
+      choices = c("(all time points)" = "", times), server = TRUE)
+  })
+
+  dl_after_time <- reactive({
+    df    <- dl_after_treat()
+    sel_h <- input$dl_time[nzchar(input$dl_time)]
+    if (length(sel_h) > 0) df <- df[df$time_h_clean %in% sel_h, , drop = FALSE]
+    df
+  })
+
+  # Step 5: populate package choices (cascade from all above)
+  observe({
+    pkgs <- sort(unique(na.omit(dl_after_time()$pkg_id)))
+    updateSelectizeInput(session, "dl_pkgs",
+      choices = c("(all packages)" = "", setNames(pkgs, pkgs)), server = TRUE)
+  })
+
+  # Final filtered dataset
+  dl_filtered <- reactive({
+    df    <- dl_after_time()
+    sel_p <- input$dl_pkgs[nzchar(input$dl_pkgs)]
+    if (length(sel_p) > 0) df <- df[df$pkg_id %in% sel_p, , drop = FALSE]
+    df
+  })
+
+  # Row-count badge
+  output$dl_row_count_ui <- renderUI({
+    df <- dl_filtered()
+    n  <- nrow(df)
+    tags$div(
+      style = paste0("background:", if (n > 0) "#e8f4fd" else "#fce4e4",
+                     ";border-left:4px solid ", if (n > 0) "#2196F3" else "#f44336",
+                     ";padding:10px 14px;border-radius:4px;"),
+      tags$b(format(n, big.mark = ","), " rows selected"),
+      tags$br(),
+      tags$small(style = "color:#555;",
+        length(unique(df$omics_type)), " data type(s)  ·  ",
+        length(unique(df$model_abbrev)), " model(s)  ·  ",
+        length(unique(df$pkg_id)), " package(s)")
+    )
+  })
+
+  # Summary preview table
+  output$dl_summary_tbl <- renderDT({
+    df <- dl_filtered()
+    if (nrow(df) == 0)
+      return(empty_dt("No data matches current filters — adjust selections in the sidebar"))
+
+    summ <- df %>%
+      dplyr::group_by(omics_type, model_abbrev, treatment_clean,
+                      time_h_clean, pkg_id) %>%
+      dplyr::summarise(rows = dplyr::n(), genes = dplyr::n_distinct(gene_name),
+                       .groups = "drop") %>%
+      dplyr::arrange(omics_type, pkg_id, model_abbrev) %>%
+      dplyr::rename(
+        "Data type"  = omics_type,
+        "Model"      = model_abbrev,
+        "Treatment"  = treatment_clean,
+        "Time"       = time_h_clean,
+        "Package"    = pkg_id,
+        "Rows"       = rows,
+        "Unique genes/features" = genes
+      )
+
+    datatable(
+      summ, rownames = FALSE, filter = "top",
+      options = list(pageLength = 20, scrollX = TRUE,
+                     order = list(list(0, "asc"), list(4, "asc")))
+    )
+  })
+
+  # Download handler
+  output$dl_full_csv <- downloadHandler(
+    filename = function() {
+      parts  <- c()
+      sel_o  <- input$dl_omics
+      sel_m  <- input$dl_model[nzchar(input$dl_model)]
+      sel_p  <- input$dl_pkgs[ nzchar(input$dl_pkgs)]
+      if (length(sel_o) > 0 && length(sel_o) <= 3)
+        parts <- c(parts, paste(gsub("[^A-Za-z0-9]", "", sel_o), collapse = "-"))
+      if (length(sel_m) > 0)
+        parts <- c(parts, paste(sel_m, collapse = "-"))
+      if (length(sel_p) > 0)
+        parts <- c(parts, paste(sel_p, collapse = "-"))
+      stem <- if (length(parts) > 0) paste(parts, collapse = "_") else "all"
+      paste0("multiomics_", stem, "_", format(Sys.Date(), "%Y%m%d"), ".csv")
+    },
+    content = function(f) {
+      write.csv(dl_filtered(), f, row.names = FALSE)
     }
   )
 
